@@ -38,27 +38,45 @@ Add Antigravity models under the `provider.google.models` section of your config
       "models": {
         "gemini-3-pro-high": {
           "name": "Gemini 3 Pro High (Antigravity)",
-          "limit": { "context": 1048576, "output": 65535 }
+          "limit": {
+            "context": 1048576,
+            "output": 65535
+          }
         },
         "gemini-3-pro-low": {
           "name": "Gemini 3 Pro Low (Antigravity)",
-          "limit": { "context": 1048576, "output": 65535 }
+          "limit": {
+            "context": 1048576,
+            "output": 65535
+          }
         },
-        "claude-4-5-sonnet": {
-          "name": "Claude 4.5 Sonnet (Antigravity)",
-          "limit": { "context": 200000, "output": 64000 }
+        "claude-sonnet-4-5": {
+          "name": "Claude Sonnet 4.5 (Antigravity)",
+          "limit": {
+            "context": 200000,
+            "output": 64000
+          }
         },
-        "claude-4-5-sonnet-thinking": {
-          "name": "Claude 4.5 Sonnet Thinking (Antigravity)",
-          "limit": { "context": 200000, "output": 64000 }
+        "claude-sonnet-4-5-thinking": {
+          "name": "Claude Sonnet 4.5 Thinking (Antigravity)",
+          "limit": {
+            "context": 200000,
+            "output": 64000
+          }
         },
-        "claude-4-5-opus-thinking": {
-          "name": "Claude 4.5 Opus Thinking (Antigravity)",
-          "limit": { "context": 200000, "output": 64000 }
+        "claude-opus-4-5-thinking": {
+          "name": "Claude Opus 4.5 Thinking (Antigravity)",
+          "limit": {
+            "context": 200000,
+            "output": 64000
+          }
         },
         "gpt-oss-120b-medium": {
           "name": "GPT-OSS 120B Medium (Antigravity)",
-          "limit": { "context": 131072, "output": 32768 }
+          "limit": {
+            "context": 131072,
+            "output": 32768
+          }
         }
       }
     }
