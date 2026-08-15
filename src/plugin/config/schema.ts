@@ -302,6 +302,13 @@ export const AntigravityConfigSchema = z.object({
    * @default 300 (5 minutes)
    */
   max_rate_limit_wait_seconds: z.number().min(0).max(3600).default(300),
+
+  /**
+   * Maximum time in seconds for a single API request before rotating accounts.
+   *
+   * @default 600 (10 minutes)
+   */
+  request_timeout_seconds: z.number().min(30).max(3600).default(600),
   
   /**
    * @deprecated Kept only for backward compatibility.
@@ -526,6 +533,7 @@ export const DEFAULT_CONFIG: AntigravityConfig = {
   proactive_refresh_buffer_seconds: 1800,
   proactive_refresh_check_interval_seconds: 300,
   max_rate_limit_wait_seconds: 300,
+  request_timeout_seconds: 600,
   quota_fallback: false,
   cli_first: false,
   agy_sdk: {

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 
 import { AccountManager, type ModelFamily, parseRateLimitReason, calculateBackoffMs, resolveQuotaGroup, RATE_LIMIT_CLEAR_TTL_MS } from "./accounts";
 import type { AccountStorageV4 } from "./storage";
@@ -1097,6 +1098,20 @@ describe("AccountManager", () => {
   });
 
   describe("Issue #174: saveToDisk throttling", () => {
+    it("reports whether a debounced save is pending", async () => {
+      vi.useFakeTimers();
+      const manager = new AccountManager();
+
+      expect(manager.hasPendingSave()).toBe(false);
+      manager.requestSaveToDisk();
+      expect(manager.hasPendingSave()).toBe(true);
+
+      await vi.runAllTimersAsync();
+      await manager.flushSaveToDisk();
+      expect(manager.hasPendingSave()).toBe(false);
+      vi.useRealTimers();
+    });
+
     it("requestSaveToDisk coalesces multiple calls into one write", async () => {
       vi.useFakeTimers();
 
@@ -1203,6 +1218,197 @@ describe("AccountManager", () => {
       await inFlightSave;
       await removal;
       expect(storageModule.removeAccountFromStorage).toHaveBeenCalledWith("revoked");
+    });
+  });
+
+  describe("disk reconciliation", () => {
+    it("preserves account identity and access tokens while adding disk accounts", async () => {
+      const auth: OAuthAuthDetails = {
+        type: "oauth",
+        refresh: "r1|p1",
+        access: "access-1",
+        expires: Date.now() + 60_000,
+      };
+      const manager = new AccountManager(auth, {
+        version: 4,
+        accounts: [{
+          refreshToken: "r1",
+          projectId: "p1",
+          addedAt: 1,
+          lastUsed: 1,
+        }],
+        activeIndex: 0,
+      });
+      const originalAccount = manager.getAccounts()[0];
+
+      vi.spyOn(storageModule, "loadAccounts").mockResolvedValueOnce({
+        version: 4,
+        accounts: [
+          {
+            refreshToken: "r1",
+            projectId: "p1-updated",
+            addedAt: 1,
+            lastUsed: 2,
+          },
+          {
+            refreshToken: "r2",
+            projectId: "p2",
+            addedAt: 2,
+            lastUsed: 2,
+          },
+        ],
+        activeIndex: 0,
+      });
+
+      expect(await manager.reloadFromDisk(auth)).toBe(true);
+      expect(manager.getAccounts()).toHaveLength(2);
+      expect(manager.getAccounts()[0]).toBe(originalAccount);
+      expect(manager.getAccounts()[0]?.access).toBe("access-1");
+      expect(manager.getAccounts()[0]?.parts.projectId).toBe("p1-updated");
+    });
+
+    it("keeps newer persisted rate limits and cooldowns over stale in-memory state", async () => {
+      const manager = new AccountManager(undefined, {
+        version: 4,
+        accounts: [{
+          refreshToken: "r1",
+          addedAt: 1,
+          lastUsed: 1,
+          rateLimitResetTimes: { claude: 20_000 },
+          rateLimitSetTimes: { claude: 1_000 },
+          coolingDownUntil: 15_000,
+          cooldownReason: "auth-failure",
+        }],
+        activeIndex: 0,
+      });
+      vi.spyOn(storageModule, "loadAccounts").mockResolvedValueOnce({
+        version: 4,
+        accounts: [{
+          refreshToken: "r1",
+          addedAt: 1,
+          lastUsed: 1,
+          rateLimitResetTimes: { claude: 40_000 },
+          rateLimitSetTimes: { claude: 2_000 },
+          coolingDownUntil: 30_000,
+          cooldownReason: "network-error",
+        }],
+        activeIndex: 0,
+      });
+
+      await manager.reloadFromDisk();
+
+      const account = manager.getAccounts()[0];
+      expect(account?.rateLimitResetTimes.claude).toBe(40_000);
+      expect(account?.rateLimitSetTimes.claude).toBe(2_000);
+      expect(account?.coolingDownUntil).toBe(30_000);
+      expect(account?.cooldownReason).toBe("network-error");
+    });
+
+    it("applies a persisted tombstone that cleared the in-memory limit generation", async () => {
+      const manager = new AccountManager(undefined, {
+        version: 4,
+        accounts: [{
+          refreshToken: "r1",
+          addedAt: 1,
+          lastUsed: 1,
+          rateLimitResetTimes: { claude: Date.now() + 60_000 },
+          rateLimitSetTimes: { claude: 1_000 },
+        }],
+        activeIndex: 0,
+      });
+      vi.spyOn(storageModule, "loadAccounts").mockResolvedValueOnce({
+        version: 4,
+        accounts: [{
+          refreshToken: "r1",
+          addedAt: 1,
+          lastUsed: 1,
+          clearedQuotaKeys: { claude: Date.now() },
+          clearedSetTimes: { claude: 1_000 },
+        }],
+        activeIndex: 0,
+      });
+
+      await manager.reloadFromDisk();
+
+      const account = manager.getAccounts()[0];
+      expect(account?.rateLimitResetTimes.claude).toBeUndefined();
+      expect(account?.rateLimitSetTimes.claude).toBeUndefined();
+      expect(account?.clearedSetTimes.claude).toBe(1_000);
+    });
+
+    it("does not reintroduce a refresh token tombstoned by another process", async () => {
+      const manager = new AccountManager(undefined, {
+        version: 4,
+        accounts: [{ refreshToken: "rotated-token", addedAt: 1, lastUsed: 1 }],
+        activeIndex: 0,
+      });
+      vi.spyOn(storageModule, "loadAccounts").mockResolvedValueOnce({
+        version: 4,
+        accounts: [{ refreshToken: "rotated-token", addedAt: 1, lastUsed: 1 }],
+        activeIndex: 0,
+        deletedRefreshTokenHashes: [
+          createHash("sha256").update("old-token").digest("hex"),
+        ],
+      });
+      const staleAuth: OAuthAuthDetails = {
+        type: "oauth",
+        refresh: "old-token",
+        access: "stale-access",
+        expires: Date.now() + 60_000,
+      };
+
+      await manager.reloadFromDisk(staleAuth);
+
+      expect(manager.getAccounts().map((account) => account.parts.refreshToken)).toEqual([
+        "rotated-token",
+      ]);
+    });
+
+    it("discards a stale disk read when in-memory state changes", async () => {
+      vi.useFakeTimers();
+      const auth: OAuthAuthDetails = {
+        type: "oauth",
+        refresh: "r1|p1",
+        access: "access-1",
+        expires: Date.now() + 60_000,
+      };
+      const manager = new AccountManager(auth, {
+        version: 4,
+        accounts: [{
+          refreshToken: "r1",
+          projectId: "p1",
+          enabled: true,
+          addedAt: 1,
+          lastUsed: 1,
+        }],
+        activeIndex: 0,
+      });
+      let resolveLoad: ((storage: AccountStorageV4) => void) | undefined;
+      vi.spyOn(storageModule, "loadAccounts").mockReturnValueOnce(
+        new Promise<AccountStorageV4>((resolve) => {
+          resolveLoad = resolve;
+        }),
+      );
+
+      const reload = manager.reloadFromDisk(auth);
+      manager.setAccountEnabled(0, false);
+      resolveLoad?.({
+        version: 4,
+        accounts: [{
+          refreshToken: "r1",
+          projectId: "stale-project",
+          enabled: true,
+          addedAt: 1,
+          lastUsed: 1,
+        }],
+        activeIndex: 0,
+      });
+
+      expect(await reload).toBe(false);
+      expect(manager.getAccounts()[0]?.enabled).toBe(false);
+      expect(manager.getAccounts()[0]?.parts.projectId).toBe("p1");
+      await vi.runAllTimersAsync();
+      vi.useRealTimers();
     });
   });
 

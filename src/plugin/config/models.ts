@@ -305,10 +305,27 @@ export function modelsFromAntigravityAvailableModels(
   models: AntigravityAvailableModels,
 ): OpencodeModelDefinitions {
   const definitions: OpencodeModelDefinitions = {};
+  const availableModelIds = new Set(
+    Object.entries(models)
+      .map(([sourceId, entry]) => antigravityModelIdFromEntry(sourceId, entry))
+      .filter((modelId): modelId is string => modelId !== null),
+  );
 
   for (const [sourceId, entry] of Object.entries(models)) {
     const modelId = antigravityModelIdFromEntry(sourceId, entry);
     if (!modelId) continue;
+
+    // Backend transport and tier aliases are routable targets, not distinct user-selectable models.
+    const rawModelId = modelId.replace(/^antigravity-/, "");
+    if (/^(?:chat_|tab(?:_jump)?_)/i.test(rawModelId) || /-agent$/i.test(rawModelId)) continue;
+
+    const canonicalModelId = modelId.replace(/-(?:extra-low|minimal|low|medium|high|max|tiered)$/i, "");
+    if (
+      canonicalModelId !== modelId
+      && (availableModelIds.has(canonicalModelId) || canonicalModelId in OPENCODE_MODEL_DEFINITIONS)
+    ) {
+      continue;
+    }
 
     const variants = defaultVariantsForModel(modelId);
     const discovered: OpencodeModelDefinition = {

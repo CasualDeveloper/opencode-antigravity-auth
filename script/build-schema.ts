@@ -47,6 +47,8 @@ const optionDescriptions: Record<string, string> = {
     "Seconds before token expiry to trigger proactive refresh.",
   proactive_refresh_check_interval_seconds:
     "Interval between proactive refresh checks in seconds.",
+  request_timeout_seconds:
+    "Maximum time in seconds for a single API request before rotating to another account.",
   auto_update: "Enable automatic plugin updates.",
   quota_fallback:
     "Deprecated: accepted for backward compatibility but ignored at runtime. Gemini fallback between Antigravity and Gemini CLI is always enabled.",

@@ -29,7 +29,7 @@ jobs:
       - name: Use Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22.22.2
           registry-url: https://registry.npmjs.org
           always-auth: true
 
@@ -47,6 +47,37 @@ jobs:
 
           echo "Version verified: $PACKAGE_VERSION"
 
+      - name: Verify NPM token
+        run: |
+          if [ -z "${NPM_TOKEN}" ]; then
+            echo "NPM_TOKEN secret is required" >&2
+            exit 1
+          fi
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run type check
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify build artifacts
+        run: |
+          set -euo pipefail
+          [ -f dist/index.js ] || { echo "dist/index.js missing" >&2; exit 1; }
+          [ -f dist/index.d.ts ] || { echo "dist/index.d.ts missing" >&2; exit 1; }
+          [ -d dist/src ] || { echo "dist/src/ missing" >&2; exit 1; }
+
+      - name: Verify packed artifact
+        run: npm run verify:pack
+
       - name: Unpublish existing version
         if: github.event.inputs.skip_unpublish != 'true'
         env:
@@ -56,9 +87,9 @@ jobs:
           VERSION="${{ github.event.inputs.version }}"
 
           echo "Checking if version $VERSION exists on npm..."
-          if npm view opencode-antigravity-auth@$VERSION version >/dev/null 2>&1; then
+          if npm view @chrisgeo/opencode-antigravity-auth@$VERSION version >/dev/null 2>&1; then
             echo "Version $VERSION exists, unpublishing..."
-            npm unpublish opencode-antigravity-auth@$VERSION --force
+            npm unpublish @chrisgeo/opencode-antigravity-auth@$VERSION --force
             echo "Successfully unpublished version $VERSION"
           else
             echo "Version $VERSION does not exist on npm, skipping unpublish"
@@ -83,34 +114,6 @@ jobs:
 
           echo "Git tag cleanup complete"
 
-      - name: Verify NPM token
-        run: |
-          if [ -z "${NPM_TOKEN}" ]; then
-            echo "NPM_TOKEN secret is required" >&2
-            exit 1
-          fi
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Run type check
-        run: npm run typecheck
-
-      - name: Run tests
-        run: npm test
-
-      - name: Build
-        run: npm run build
-
-      - name: Verify build artifacts
-        run: |
-          set -euo pipefail
-          [ -f dist/index.js ] || { echo "dist/index.js missing" >&2; exit 1; }
-          [ -f dist/index.d.ts ] || { echo "dist/index.d.ts missing" >&2; exit 1; }
-          [ -d dist/src ] || { echo "dist/src/ missing" >&2; exit 1; }
-
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -124,11 +127,11 @@ jobs:
           echo "Successfully published version $VERSION"
           echo ""
           echo "Updating @latest tag..."
-          npm dist-tag add opencode-antigravity-auth@$VERSION latest
+          npm dist-tag add @chrisgeo/opencode-antigravity-auth@$VERSION latest
 
           echo ""
           echo "Current dist-tags:"
-          npm dist-tag ls opencode-antigravity-auth
+          npm dist-tag ls @chrisgeo/opencode-antigravity-auth
 
       - name: Create git tag
         run: |
@@ -173,7 +176,7 @@ jobs:
             echo ""
             printf '%s\n' '```json'
             printf '%s\n' '{'
-            printf '%s\n' "  \"plugins\": [\"opencode-antigravity-auth@${VERSION}\"]"
+            printf '%s\n' "  \"plugin\": [\"@chrisgeo/opencode-antigravity-auth@${VERSION}\"]"
             printf '%s\n' '}'
             printf '%s\n' '```'
           } >"$BODY_FILE"
@@ -203,7 +206,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Install:**" >> $GITHUB_STEP_SUMMARY
           echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "npm install opencode-antigravity-auth@${{ github.event.inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "npm install @chrisgeo/opencode-antigravity-auth@${{ github.event.inputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "# or" >> $GITHUB_STEP_SUMMARY
-          echo "npm install opencode-antigravity-auth@latest" >> $GITHUB_STEP_SUMMARY
+          echo "npm install @chrisgeo/opencode-antigravity-auth@latest" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY

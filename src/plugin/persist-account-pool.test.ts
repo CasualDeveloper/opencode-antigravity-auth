@@ -132,12 +132,30 @@ describe("loadAccounts", () => {
       expect(result).toBeNull();
     });
 
+    it("throws on permission denied when a caller must preserve existing data", async () => {
+      const error = new Error("EACCES") as NodeJS.ErrnoException;
+      error.code = "EACCES";
+      vi.mocked(fs.readFile).mockRejectedValue(error);
+
+      await expect(
+        storageModule.loadAccounts({ throwOnError: true }),
+      ).rejects.toThrow("EACCES");
+    });
+
     it("returns null on JSON parse error", async () => {
       vi.mocked(fs.readFile).mockResolvedValue("{ invalid json }}}");
 
       const result = await storageModule.loadAccounts();
 
       expect(result).toBeNull();
+    });
+
+    it("throws on malformed JSON when a caller must preserve existing data", async () => {
+      vi.mocked(fs.readFile).mockResolvedValue("{ invalid json }}}");
+
+      await expect(
+        storageModule.loadAccounts({ throwOnError: true }),
+      ).rejects.toThrow();
     });
 
     it("returns null on invalid storage format", async () => {

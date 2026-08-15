@@ -215,4 +215,66 @@ describe("dynamic model discovery helpers", () => {
       limit: { context: 200000, output: 64000 },
     });
   });
+
+  it("hides internal Antigravity transport and redundant tier models", () => {
+    const models = modelsFromAntigravityAvailableModels({
+      chat_20706: {
+        displayName: "Gemini 3.1 Flash Lite",
+        modelName: "chat_20706",
+      },
+      tab_flash_lite_preview: {
+        displayName: "Gemini 3.1 Flash Lite",
+        modelName: "tab_flash_lite_preview",
+      },
+      "gemini-3-flash-agent": {
+        displayName: "Gemini 3.5 Flash (High)",
+        modelName: "gemini-3-flash-agent",
+      },
+      "gemini-3.1-pro": {
+        displayName: "Gemini 3.1 Pro",
+        modelName: "gemini-3.1-pro",
+      },
+      "gemini-3.1-pro-low": {
+        displayName: "Gemini 3.1 Pro (Low)",
+        modelName: "gemini-3.1-pro-low",
+      },
+      "gemini-3.1-pro-high": {
+        displayName: "Gemini 3.1 Pro (High)",
+        modelName: "gemini-3.1-pro-high",
+      },
+      "gemini-3.6-flash-tiered": {
+        displayName: "Gemini 3.6 Flash",
+        modelName: "gemini-3.6-flash-tiered",
+      },
+      "claude-opus-4-6-thinking-max": {
+        displayName: "Claude Opus 4.6 Thinking (Max)",
+        modelName: "claude-opus-4-6-thinking-max",
+      },
+      "gpt-oss-120b-medium": {
+        displayName: "GPT-OSS 120B (Medium)",
+        modelName: "gpt-oss-120b-medium",
+      },
+      "gemini-3.9-flash": {
+        displayName: "Gemini 3.9 Flash",
+        modelName: "gemini-3.9-flash",
+      },
+    });
+
+    expect(Object.keys(models).sort()).toEqual([
+      "antigravity-gemini-3.1-pro",
+      "antigravity-gemini-3.9-flash",
+      "antigravity-gpt-oss-120b-medium",
+    ]);
+  });
+
+  it("keeps a tier model when no canonical model is available", () => {
+    const models = modelsFromAntigravityAvailableModels({
+      "future-model-high": {
+        displayName: "Future Model High",
+        modelName: "future-model-high",
+      },
+    });
+
+    expect(models["antigravity-future-model-high"]).toBeDefined();
+  });
 });

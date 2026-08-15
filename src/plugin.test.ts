@@ -30,13 +30,14 @@ vi.mock("./plugin/storage", async (importOriginal) => {
     saveAccounts: vi.fn(async () => undefined),
     saveAccountsReplace: vi.fn(async () => undefined),
     removeAccountFromStorage: vi.fn(async () => undefined),
+    replaceAccountRefreshToken: vi.fn(async () => undefined),
     clearAccounts: vi.fn(async () => undefined),
   };
 });
 
 const { createAntigravityPlugin, loopEscapeTestHooks, __testExports } = await import("./plugin");
 const storageModule = await import("./plugin/storage");
-const { resetPublicGeminiApiModelCatalogForTests } = await import("./plugin/model-catalog");
+const { resetModelCatalogsForTests } = await import("./plugin/model-catalog");
 const { resetAgySdkCredentialStateForTests } = await import("./plugin/api-key");
 
 const client = {
@@ -49,7 +50,11 @@ const client = {
 // so one test's (possibly sparse, mock-driven) discovery fetch can't leak
 // into another test's agy-sdk routing assertions.
 afterEach(() => {
-  resetPublicGeminiApiModelCatalogForTests();
+  resetModelCatalogsForTests();
+  __testExports.resetActiveAccountManager();
+  vi.mocked(storageModule.loadAccounts).mockReset();
+  vi.mocked(storageModule.loadAccounts).mockResolvedValue(null);
+  vi.mocked(storageModule.replaceAccountRefreshToken).mockReset();
 });
 
 describe("Gemini Flash-Lite routing", () => {
@@ -67,6 +72,113 @@ describe("Gemini Flash-Lite routing", () => {
       explicitQuota: false,
       allowQuotaFallback: false,
     });
+  });
+});
+
+describe("request timeout signals", () => {
+  it("aborts with TimeoutError when the request deadline expires", async () => {
+    const signal = __testExports.createRequestSignal(undefined, 5);
+
+    await new Promise<void>((resolve) => {
+      signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+
+    expect(signal.aborted).toBe(true);
+    expect(signal.reason).toMatchObject({ name: "TimeoutError" });
+  });
+
+  it("preserves caller cancellation", () => {
+    const controller = new AbortController();
+    const reason = new Error("cancelled by caller");
+    const signal = __testExports.createRequestSignal(controller.signal, 60_000);
+
+    controller.abort(reason);
+
+    expect(signal.aborted).toBe(true);
+    expect(signal.reason).toBe(reason);
+  });
+
+  it("times out while waiting for the first streaming byte", async () => {
+    const response = new Response(new ReadableStream<Uint8Array>({}), {
+      headers: { "Content-Type": "text/event-stream" },
+    });
+    const signal = __testExports.createRequestSignal(undefined, 5);
+
+    await expect(
+      __testExports.waitForResponseStart(response, signal),
+    ).rejects.toMatchObject({ name: "TimeoutError" });
+  });
+});
+
+describe("google_search project context", () => {
+  it("resolves and uses the managed project before searching", async () => {
+    const refreshToken = `search-refresh-${Date.now()}`;
+    vi.mocked(storageModule.loadAccounts).mockResolvedValue({
+      version: 4,
+      accounts: [{
+        refreshToken,
+        projectId: "user-project",
+        addedAt: 1,
+        lastUsed: 1,
+      }],
+      activeIndex: 0,
+    });
+
+    let projectResolutionCalls = 0;
+    const searchProjects: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("loadCodeAssist")) {
+        projectResolutionCalls += 1;
+        return new Response(JSON.stringify({
+          cloudaicompanionProject: "managed-project",
+        }));
+      }
+      if (url.includes("generateContent")) {
+        const body = JSON.parse(String(init?.body)) as { project?: string };
+        if (body.project) searchProjects.push(body.project);
+        return new Response(JSON.stringify({
+          response: {
+            candidates: [{ content: { parts: [{ text: "result" }] } }],
+          },
+        }));
+      }
+      return new Response("not found", { status: 404 });
+    }));
+
+    try {
+      const plugin = await createAntigravityPlugin("google")({
+        client,
+        directory: process.cwd(),
+      });
+      const auth = {
+        type: "oauth" as const,
+        refresh: `${refreshToken}|user-project`,
+        access: "access-token",
+        expires: Date.now() + 3_600_000,
+      };
+      await plugin.auth.loader(async () => auth, {});
+
+      const searchTool = plugin.tool?.google_search as {
+        execute: (
+          args: { query: string; thinking: boolean },
+          context: { abort?: AbortSignal },
+        ) => Promise<string>;
+      };
+      await searchTool.execute(
+        { query: "latest news", thinking: false },
+        {},
+      );
+      await searchTool.execute(
+        { query: "follow-up", thinking: false },
+        {},
+      );
+
+      expect(searchProjects).toEqual(["managed-project", "managed-project"]);
+      expect(projectResolutionCalls).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
@@ -197,6 +309,123 @@ describe("createAntigravityPlugin provider models", () => {
           reasoning: true,
           toolcall: true,
         },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("discovers Antigravity models from a disk OAuth account before auth loader initialization", async () => {
+    vi.mocked(storageModule.loadAccounts).mockResolvedValue({
+      version: 4,
+      accounts: [{
+        refreshToken: "disk-refresh-token",
+        managedProjectId: "managed-project",
+        addedAt: 1,
+        lastUsed: 1,
+        enabled: true,
+      }],
+      activeIndex: 0,
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("oauth2.googleapis.com")) {
+        return new Response(JSON.stringify({
+          access_token: "disk-access-token",
+          expires_in: 3600,
+          refresh_token: "rotated-refresh-token",
+        }), { headers: { "content-type": "application/json" } });
+      }
+      if (url.includes("fetchAvailableModels")) {
+        return new Response(JSON.stringify({
+          models: {
+            "gemini-3.9-flash": {
+              displayName: "Gemini 3.9 Flash",
+              modelName: "gemini-3.9-flash",
+            },
+          },
+        }));
+      }
+      if (url.includes("generativelanguage.googleapis.com/v1beta/models")) {
+        return new Response(JSON.stringify({ models: [] }));
+      }
+      return new Response("1.2.3");
+    }));
+
+    try {
+      const plugin = await createAntigravityPlugin("google")({
+        client,
+        directory: process.cwd(),
+      });
+      const models = await plugin.provider?.models?.(
+        {
+          id: "google",
+          api: "https://generativelanguage.googleapis.com/v1beta",
+          npm: "@ai-sdk/google",
+          models: {},
+        },
+        { auth: { type: "api", key: "secret" } },
+      );
+
+      expect(models?.["antigravity-gemini-3.9-flash"]).toBeDefined();
+      expect(storageModule.replaceAccountRefreshToken).toHaveBeenCalledWith(
+        "disk-refresh-token",
+        "rotated-refresh-token",
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("persists rotated credentials when discovery receives OpenCode OAuth auth", async () => {
+    const authSet = vi.fn(async () => undefined);
+    const oauthClient = {
+      ...client,
+      auth: { set: authSet },
+    } as unknown as PluginClient;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("oauth2.googleapis.com")) {
+        return new Response(JSON.stringify({
+          access_token: "rotated-access-token",
+          expires_in: 3600,
+          refresh_token: "rotated-refresh-token",
+        }), { headers: { "content-type": "application/json" } });
+      }
+      if (url.includes("fetchAvailableModels")) {
+        return new Response(JSON.stringify({ models: {} }));
+      }
+      return new Response("1.2.3");
+    }));
+
+    try {
+      const plugin = await createAntigravityPlugin("google")({
+        client: oauthClient,
+        directory: process.cwd(),
+      });
+      await plugin.provider?.models?.(
+        { id: "google", models: {} },
+        {
+          auth: {
+            type: "oauth",
+            access: "expired-access-token",
+            refresh: "old-refresh-token|project=project-1",
+            expires: 0,
+          },
+        },
+      );
+
+      expect(storageModule.replaceAccountRefreshToken).toHaveBeenCalledWith(
+        "old-refresh-token",
+        "rotated-refresh-token",
+      );
+      expect(authSet).toHaveBeenCalledWith({
+        path: { id: "google" },
+        body: expect.objectContaining({
+          type: "oauth",
+          access: "rotated-access-token",
+          refresh: expect.stringContaining("rotated-refresh-token"),
+        }),
       });
     } finally {
       vi.unstubAllGlobals();

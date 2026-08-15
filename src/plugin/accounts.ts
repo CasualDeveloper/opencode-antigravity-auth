@@ -1,5 +1,5 @@
 import { formatRefreshParts, parseRefreshParts } from "./auth";
-import { loadAccounts, removeAccountFromStorage, saveAccounts, saveAccountsReplace, type AccountStorageV4, type AccountMetadataV3, type RateLimitStateV3, type ModelFamily, type HeaderStyle, type CooldownReason } from "./storage";
+import { isRefreshTokenDeleted, loadAccounts, mergeRateLimitState, removeAccountFromStorage, saveAccounts, saveAccountsReplace, type AccountStorageV4, type AccountMetadataV3, type RateLimitStateV3, type ModelFamily, type HeaderStyle, type CooldownReason } from "./storage";
 import type { OAuthAuthDetails, RefreshParts } from "./types";
 import type { AccountSelectionStrategy } from "./config/schema";
 import { getHealthTracker, getTokenTracker, selectHybridAccount, type AccountWithMetrics } from "./rotation";
@@ -445,10 +445,176 @@ export class AccountManager {
   /** Tracks an in-flight disk write so flushSaveToDisk can await a write that has
    * already started (savePending is cleared before the write settles). */
   private activeSave: Promise<void> | null = null;
+  private reloadPromise: Promise<boolean> | null = null;
+  private mutationRevision = 0;
 
   static async loadFromDisk(authFallback?: OAuthAuthDetails): Promise<AccountManager> {
     const stored = await loadAccounts();
     return new AccountManager(authFallback, stored);
+  }
+
+  async reloadFromDisk(authFallback?: OAuthAuthDetails): Promise<boolean> {
+    if (this.hasPendingSave()) {
+      return false;
+    }
+    if (this.reloadPromise) {
+      return this.reloadPromise;
+    }
+
+    const revision = this.mutationRevision;
+    const reload = this.reconcileFromDisk(authFallback, revision);
+    this.reloadPromise = reload;
+    try {
+      return await reload;
+    } finally {
+      if (this.reloadPromise === reload) {
+        this.reloadPromise = null;
+      }
+    }
+  }
+
+  private async reconcileFromDisk(
+    authFallback?: OAuthAuthDetails,
+    expectedRevision: number = this.mutationRevision,
+  ): Promise<boolean> {
+    const stored = await loadAccounts();
+    if (!stored || this.mutationRevision !== expectedRevision) {
+      return false;
+    }
+
+    const persistedByToken = new Map(
+      stored.accounts.map((account) => [account.refreshToken, account]),
+    );
+    let changed = false;
+
+    for (const account of this.accounts) {
+      const persisted = persistedByToken.get(account.parts.refreshToken);
+      if (!persisted) {
+        if (account.enabled) {
+          account.enabled = false;
+          changed = true;
+        }
+        continue;
+      }
+      persistedByToken.delete(account.parts.refreshToken);
+
+      const nextEnabled = persisted.enabled !== false;
+      if (
+        account.email !== persisted.email ||
+        account.parts.projectId !== persisted.projectId ||
+        account.parts.managedProjectId !== persisted.managedProjectId ||
+        account.enabled !== nextEnabled
+      ) {
+        changed = true;
+      }
+      account.email = persisted.email;
+      account.parts.projectId = persisted.projectId;
+      account.parts.managedProjectId = persisted.managedProjectId;
+      account.enabled = nextEnabled;
+      account.addedAt = clampNonNegativeInt(persisted.addedAt, account.addedAt);
+      account.lastUsed = Math.max(
+        account.lastUsed,
+        clampNonNegativeInt(persisted.lastUsed, 0),
+      );
+      const mergedRateLimits = mergeRateLimitState(persisted, {
+        refreshToken: account.parts.refreshToken,
+        addedAt: account.addedAt,
+        lastUsed: account.lastUsed,
+        rateLimitResetTimes: account.rateLimitResetTimes,
+        rateLimitSetTimes: account.rateLimitSetTimes,
+        clearedQuotaKeys: account.clearedQuotaKeys,
+        clearedSetTimes: account.clearedSetTimes,
+      });
+      account.rateLimitResetTimes = mergedRateLimits.rateLimitResetTimes ?? {};
+      account.rateLimitSetTimes = mergedRateLimits.rateLimitSetTimes ?? {};
+      account.clearedQuotaKeys = mergedRateLimits.clearedQuotaKeys ?? {};
+      account.clearedSetTimes = mergedRateLimits.clearedSetTimes ?? {};
+      if (
+        persisted.coolingDownUntil !== undefined
+        && persisted.coolingDownUntil > (account.coolingDownUntil ?? 0)
+      ) {
+        account.coolingDownUntil = persisted.coolingDownUntil;
+        account.cooldownReason = persisted.cooldownReason;
+      }
+      account.cachedQuota = persisted.cachedQuota ?? account.cachedQuota;
+      account.cachedQuotaUpdatedAt =
+        persisted.cachedQuotaUpdatedAt ?? account.cachedQuotaUpdatedAt;
+      account.verificationRequired = persisted.verificationRequired;
+      account.verificationRequiredAt = persisted.verificationRequiredAt;
+      account.verificationRequiredReason = persisted.verificationRequiredReason;
+      account.verificationUrl = persisted.verificationUrl;
+      account.fingerprint = persisted.fingerprint ?? account.fingerprint;
+      account.fingerprintHistory =
+        persisted.fingerprintHistory ?? account.fingerprintHistory;
+    }
+
+    const authParts = authFallback
+      ? parseRefreshParts(authFallback.refresh)
+      : undefined;
+    if (
+      authParts?.refreshToken &&
+      !isRefreshTokenDeleted(stored, authParts.refreshToken) &&
+      !this.accounts.some(
+        (account) => account.parts.refreshToken === authParts.refreshToken,
+      ) &&
+      !persistedByToken.has(authParts.refreshToken)
+    ) {
+      persistedByToken.set(authParts.refreshToken, {
+        refreshToken: authParts.refreshToken,
+        projectId: authParts.projectId,
+        managedProjectId: authParts.managedProjectId,
+        addedAt: nowMs(),
+        lastUsed: nowMs(),
+      });
+    }
+
+    for (const persisted of persistedByToken.values()) {
+      const matchesFallback =
+        persisted.refreshToken === authParts?.refreshToken;
+      const clearedQuotaKeys = sanitizeClearedQuotaKeys(
+        persisted.clearedQuotaKeys,
+      );
+      this.accounts.push({
+        index: this.accounts.length,
+        email: persisted.email,
+        addedAt: clampNonNegativeInt(persisted.addedAt, nowMs()),
+        lastUsed: clampNonNegativeInt(persisted.lastUsed, 0),
+        parts: {
+          refreshToken: persisted.refreshToken,
+          projectId: persisted.projectId,
+          managedProjectId: persisted.managedProjectId,
+        },
+        access: matchesFallback ? authFallback?.access : undefined,
+        expires: matchesFallback ? authFallback?.expires : undefined,
+        enabled: persisted.enabled !== false,
+        rateLimitResetTimes: persisted.rateLimitResetTimes ?? {},
+        rateLimitSetTimes: sanitizeRateLimitSetTimes(
+          persisted.rateLimitSetTimes,
+          persisted.rateLimitResetTimes,
+        ),
+        clearedQuotaKeys,
+        clearedSetTimes: sanitizeClearedSetTimes(
+          persisted.clearedSetTimes,
+          clearedQuotaKeys,
+        ),
+        coolingDownUntil: persisted.coolingDownUntil,
+        cooldownReason: persisted.cooldownReason,
+        touchedForQuota: {},
+        fingerprint: persisted.fingerprint ?? generateFingerprint(),
+        fingerprintHistory: persisted.fingerprintHistory ?? [],
+        cachedQuota: persisted.cachedQuota as
+          | Partial<Record<QuotaGroup, QuotaGroupSummary>>
+          | undefined,
+        cachedQuotaUpdatedAt: persisted.cachedQuotaUpdatedAt,
+        verificationRequired: persisted.verificationRequired,
+        verificationRequiredAt: persisted.verificationRequiredAt,
+        verificationRequiredReason: persisted.verificationRequiredReason,
+        verificationUrl: persisted.verificationUrl,
+      });
+      changed = true;
+    }
+
+    return changed;
   }
 
   constructor(authFallback?: OAuthAuthDetails, stored?: AccountStorageV4 | null) {
@@ -1133,6 +1299,7 @@ export class AccountManager {
   }
 
   async saveToDisk(replace = false): Promise<void> {
+    this.mutationRevision += 1;
     const storage = this.createStorageSnapshot();
     return this.enqueueStorageOperation(() => replace
       ? saveAccountsReplace(storage)
@@ -1283,6 +1450,7 @@ export class AccountManager {
   }
 
   requestSaveToDisk(): void {
+    this.mutationRevision += 1;
     if (this.savePending) {
       return;
     }
@@ -1290,6 +1458,10 @@ export class AccountManager {
     this.saveTimeout = setTimeout(() => {
       void this.executeSave();
     }, 1000);
+  }
+
+  hasPendingSave(): boolean {
+    return this.savePending || this.activeSave !== null;
   }
 
   async flushSaveToDisk(): Promise<void> {

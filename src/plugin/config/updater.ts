@@ -41,7 +41,9 @@ export interface UpdateConfigOptions {
 // Constants
 // =============================================================================
 
-const PLUGIN_NAME = "opencode-antigravity-auth@latest";
+const PACKAGE_NAME = "@chrisgeo/opencode-antigravity-auth";
+const LEGACY_PACKAGE_NAME = "opencode-antigravity-auth";
+const PLUGIN_NAME = `${PACKAGE_NAME}@latest`;
 const SCHEMA_URL = "https://opencode.ai/config.json";
 const OPENCODE_JSON_FILENAME = "opencode.json";
 const OPENCODE_JSONC_FILENAME = "opencode.jsonc";
@@ -135,9 +137,16 @@ export async function updateOpencodeConfig(
       config.plugin = [];
     }
 
-    // Check if plugin is already in the list (any version)
-    const hasPlugin = config.plugin.some((p) =>
-      p.includes("opencode-antigravity-auth")
+    // Old pins do not necessarily exist under the new scope, so move them to its published latest tag.
+    config.plugin = config.plugin.map((entry) => {
+      if (entry === LEGACY_PACKAGE_NAME || entry.startsWith(`${LEGACY_PACKAGE_NAME}@`)) return PLUGIN_NAME;
+      return entry;
+    });
+
+    const hasPlugin = config.plugin.some((entry) =>
+      entry === PACKAGE_NAME
+      || entry.startsWith(`${PACKAGE_NAME}@`)
+      || (entry.startsWith("file://") && entry.includes(LEGACY_PACKAGE_NAME))
     );
     if (!hasPlugin) {
       config.plugin.push(PLUGIN_NAME);

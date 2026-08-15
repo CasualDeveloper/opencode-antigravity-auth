@@ -25,6 +25,24 @@ describe("cli_first config", () => {
   });
 });
 
+describe("request_timeout_seconds config", () => {
+  it("defaults to ten minutes", () => {
+    expect(DEFAULT_CONFIG).toHaveProperty("request_timeout_seconds", 600);
+  });
+
+  it("documents the request timeout in the JSON schema", () => {
+    const schemaPath = new URL("../../../assets/antigravity.schema.json", import.meta.url);
+    const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as {
+      properties?: Record<string, { type?: string; default?: unknown; description?: string }>;
+    };
+
+    expect(schema.properties?.request_timeout_seconds).toMatchObject({
+      type: "number",
+      default: 600,
+    });
+  });
+});
+
 describe("claude_prompt_auto_caching config", () => {
   it("includes claude_prompt_auto_caching default in DEFAULT_CONFIG", () => {
     expect(DEFAULT_CONFIG).toHaveProperty("claude_prompt_auto_caching", false);

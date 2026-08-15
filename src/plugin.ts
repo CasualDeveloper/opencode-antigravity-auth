@@ -44,7 +44,7 @@ import {
 import { EmptyResponseError } from "./plugin/errors";
 import { AntigravityTokenRefreshError, refreshAccessToken } from "./plugin/token";
 import { startOAuthListener, type OAuthListener } from "./plugin/server";
-import { clearAccounts, loadAccounts, removeAccountFromStorage, saveAccounts } from "./plugin/storage";
+import { clearAccounts, loadAccounts, removeAccountFromStorage, replaceAccountRefreshToken, saveAccounts } from "./plugin/storage";
 import { AccountManager, type ModelFamily, parseRateLimitReason, calculateBackoffMs, computeSoftQuotaCacheTtlMs } from "./plugin/accounts";
 import { createAutoUpdateCheckerHook } from "./hooks/auto-update-checker";
 import { loadConfig, initRuntimeConfig, type AntigravityConfig } from "./plugin/config";
@@ -84,6 +84,7 @@ import type {
   AuthDetails,
   GetAuth,
   LoaderResult,
+  OAuthAuthDetails,
   PluginClient,
   PluginContext,
   PluginResult,
@@ -226,6 +227,31 @@ async function modelsFromAgySdkCredentials(
   return {};
 }
 
+async function oauthAuthFromDisk(): Promise<OAuthAuthDetails | undefined> {
+  const stored = await loadAccounts();
+  const accounts = stored?.accounts ?? [];
+  const indexed = typeof stored?.activeIndex === "number"
+    && stored.activeIndex >= 0
+    && stored.activeIndex < accounts.length
+    ? accounts[stored.activeIndex]
+    : undefined;
+  const account = indexed?.enabled !== false && indexed?.refreshToken
+    ? indexed
+    : accounts.find((candidate) => candidate.enabled !== false && !!candidate.refreshToken);
+  if (!account?.refreshToken) return undefined;
+
+  return {
+    type: "oauth",
+    refresh: formatRefreshParts({
+      refreshToken: account.refreshToken,
+      projectId: account.projectId,
+      managedProjectId: account.managedProjectId,
+    }),
+    access: "",
+    expires: 0,
+  };
+}
+
 async function modelsFromOAuthAuth(
   config: AntigravityConfig,
   auth: AuthDetails | undefined,
@@ -247,6 +273,9 @@ async function modelsFromOAuthAuth(
       };
     }
   }
+  if (!effectiveAuth) {
+    effectiveAuth = await oauthAuthFromDisk();
+  }
 
   if (!effectiveAuth) {
     const cached = getCachedAntigravityAvailableModels();
@@ -258,8 +287,38 @@ async function modelsFromOAuthAuth(
 
   let accessToken = effectiveAuth.access;
   if (!accessToken || accessTokenExpired(effectiveAuth)) {
+    const sourceAuthWasOAuth = !!auth && isOAuthAuth(auth);
+    const previousRefreshToken = parseRefreshParts(effectiveAuth.refresh).refreshToken;
     const refreshed = await refreshAccessToken(effectiveAuth, client, providerId);
-    accessToken = refreshed?.access;
+    if (refreshed) {
+      effectiveAuth = refreshed;
+      accessToken = refreshed.access;
+      const nextRefreshToken = parseRefreshParts(refreshed.refresh).refreshToken;
+      if (previousRefreshToken && nextRefreshToken && previousRefreshToken !== nextRefreshToken) {
+        await replaceAccountRefreshToken(previousRefreshToken, nextRefreshToken);
+        const managedAccount = activeAccountManager?.getAccounts().find(
+          (account) => account.parts.refreshToken === previousRefreshToken,
+        );
+        if (managedAccount) {
+          activeAccountManager?.updateFromAuth(managedAccount, refreshed);
+        }
+        if (sourceAuthWasOAuth) {
+          try {
+            await client.auth.set({
+              path: { id: providerId },
+              body: {
+                type: "oauth",
+                refresh: refreshed.refresh,
+                access: refreshed.access ?? "",
+                expires: refreshed.expires ?? 0,
+              },
+            });
+          } catch (error) {
+            log.warn("Failed to persist rotated OAuth credentials", { error: String(error) });
+          }
+        }
+      }
+    }
   }
   if (!accessToken) {
     const cached = getCachedAntigravityAvailableModels();
@@ -1076,7 +1135,9 @@ async function persistAccountPool(
   
   // If replaceAll is true (fresh login), start with empty accounts
   // Otherwise, load existing accounts and merge
-  const stored = replaceAll ? null : await loadAccounts();
+  const stored = replaceAll
+    ? null
+    : await loadAccounts({ throwOnError: true });
   const accounts = stored?.accounts ? [...stored.accounts] : [];
 
   const indexByRefreshToken = new Map<string, number>();
@@ -1656,6 +1717,86 @@ function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
   });
 }
 
+function createRequestSignal(
+  callerSignal: AbortSignal | undefined,
+  timeoutMs: number,
+): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  return callerSignal
+    ? AbortSignal.any([callerSignal, timeoutSignal])
+    : timeoutSignal;
+}
+
+function readStreamChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+
+    const onAbort = () => {
+      void reader.cancel(signal.reason);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    reader.read().then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
+}
+
+async function waitForResponseStart(
+  response: Response,
+  signal: AbortSignal,
+): Promise<Response> {
+  if (!response.body) {
+    return response;
+  }
+
+  const reader = response.body.getReader();
+  const firstChunk = await readStreamChunk(reader, signal);
+  if (firstChunk.done) {
+    return new Response(null, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  }
+
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(firstChunk.value);
+      const pump = async (): Promise<void> => {
+        try {
+          while (true) {
+            const chunk = await reader.read();
+            if (chunk.done) {
+              controller.close();
+              return;
+            }
+            controller.enqueue(chunk.value);
+          }
+        } catch (error) {
+          controller.error(error);
+        }
+      };
+      void pump();
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
 /**
  * Creates an Antigravity OAuth plugin for a specific provider ID.
  */
@@ -1799,21 +1940,62 @@ export const createAntigravityPlugin = (providerId: string) => async (
         return "Error: Not authenticated with Antigravity. Please run `opencode auth login` to authenticate.";
       }
 
-      // Get access token and project ID
-      const parts = parseRefreshParts(auth.refresh);
-      const projectId = parts.managedProjectId || parts.projectId || "unknown";
-
-      // Ensure we have a valid access token
-      let accessToken = auth.access;
-      if (!accessToken || accessTokenExpired(auth)) {
+      let effectiveAuth = auth;
+      if (activeAccountManager) {
+        const refreshToken = parseRefreshParts(auth.refresh).refreshToken;
+        const account = activeAccountManager
+          .getAccounts()
+          .find((candidate) => candidate.parts.refreshToken === refreshToken);
+        if (account) {
+          const managerAuth = activeAccountManager.toAuthDetails(account);
+          effectiveAuth = {
+            ...managerAuth,
+            access: managerAuth.access || auth.access,
+            expires: managerAuth.expires ?? auth.expires,
+          };
+        }
+      }
+      if (!effectiveAuth.access || accessTokenExpired(effectiveAuth)) {
         try {
-          const refreshed = await refreshAccessToken(auth, client, providerId);
-          accessToken = refreshed?.access;
+          const refreshed = await refreshAccessToken(
+            effectiveAuth,
+            client,
+            providerId,
+          );
+          if (!refreshed?.access) {
+            return "Error: No valid access token available. Please run `opencode auth login` to re-authenticate.";
+          }
+          effectiveAuth = refreshed;
         } catch (error) {
           return `Error: Failed to refresh access token: ${error instanceof Error ? error.message : String(error)}`;
         }
       }
 
+      let projectContext;
+      try {
+        projectContext = await ensureProjectContext(effectiveAuth);
+      } catch (error) {
+        return `Error: Failed to resolve project context: ${error instanceof Error ? error.message : String(error)}`;
+      }
+
+      if (projectContext.auth.refresh !== effectiveAuth.refresh && activeAccountManager) {
+        const refreshToken = parseRefreshParts(effectiveAuth.refresh).refreshToken;
+        const account = activeAccountManager
+          .getAccounts()
+          .find((candidate) => candidate.parts.refreshToken === refreshToken);
+        if (account) {
+          activeAccountManager.updateFromAuth(account, projectContext.auth);
+          try {
+            await activeAccountManager.saveToDisk();
+          } catch (error) {
+            log.warn("Failed to persist google_search project context", {
+              error: String(error),
+            });
+          }
+        }
+      }
+
+      const accessToken = projectContext.auth.access || effectiveAuth.access;
       if (!accessToken) {
         return "Error: No valid access token available. Please run `opencode auth login` to re-authenticate.";
       }
@@ -1825,7 +2007,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
           thinking: args.thinking,
         },
         accessToken,
-        projectId,
+        projectContext.effectiveProjectId,
         ctx.abort,
       );
     },
@@ -1903,27 +2085,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
       // as 404s by the API-key-only interceptor below.
       let auth = initialAuth;
       if (!isOAuthAuth(initialAuth)) {
-        const diskAccounts = await loadAccounts();
-        const accountsOnDisk = diskAccounts?.accounts ?? [];
-        const candidateIndex = typeof diskAccounts?.activeIndex === "number"
-          && diskAccounts.activeIndex >= 0
-          && diskAccounts.activeIndex < accountsOnDisk.length
-          ? diskAccounts.activeIndex
-          : 0;
-        const activeAccount = accountsOnDisk[candidateIndex]
-          ?? accountsOnDisk.find((acc) => !!acc?.refreshToken);
-        if (activeAccount?.refreshToken) {
-          auth = {
-            type: "oauth",
-            refresh: formatRefreshParts({
-              refreshToken: activeAccount.refreshToken,
-              projectId: activeAccount.projectId,
-              managedProjectId: activeAccount.managedProjectId,
-            }),
-            access: "",
-            expires: 0,
-          };
-        }
+        auth = await oauthAuthFromDisk() ?? auth;
       }
        
       // If OpenCode has no valid OAuth auth, clear any stale account storage
@@ -1975,7 +2137,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
       
       // Note: AccountManager now ensures the current auth is always included in accounts
 
-      const accountManager = await AccountManager.loadFromDisk(auth);
+      let accountManager = await AccountManager.loadFromDisk(auth);
       activeAccountManager = accountManager;
       if (accountManager.getAccountCount() > 0) {
         accountManager.requestSaveToDisk();
@@ -2021,13 +2183,24 @@ export const createAntigravityPlugin = (providerId: string) => async (
             return fetch(input, init);
           }
 
+          const latestAuth = await getAuth();
+          if (!accountManager.hasPendingSave()) {
+            const reloadAuth = isOAuthAuth(latestAuth) ? latestAuth : auth;
+            try {
+              await accountManager.reloadFromDisk(reloadAuth);
+            } catch (error) {
+              log.warn("Failed to reload account state; using in-memory state", {
+                error: String(error),
+              });
+            }
+          }
+
           // Fall back to the API-key-only sub-branch only when we have no
           // usable OAuth accounts (e.g. all were removed via invalid_grant).
           // Otherwise the OAuth/AccountManager flow below handles routing,
           // including the Antigravity SDK / Gemini API-key fallback when
           // quota is exhausted (see tryAgySdkFallbackForRequest).
           if (accountManager.getAccountCount() === 0) {
-            const latestAuth = await getAuth();
             const latestCredentials = getAgySdkCredentials(config, isApiKeyAuth(latestAuth) ? latestAuth : null);
             const urlString = toUrlString(input);
             // Antigravity-only models can't be served by the public Gemini API
@@ -2682,6 +2855,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 continue;
               }
 
+              let effectiveTimeoutMs = (config.request_timeout_seconds ?? 600) * 1000;
               try {
                 const prepared = await prepareAntigravityRequest(
                   input,
@@ -2697,6 +2871,9 @@ export const createAntigravityPlugin = (providerId: string) => async (
                     fingerprint: account.fingerprint,
                   },
                 );
+                effectiveTimeoutMs = prepared.streaming
+                  ? Math.min(effectiveTimeoutMs * 3, 1_800_000)
+                  : effectiveTimeoutMs;
 
                 const originalUrl = toUrlString(input);
                 const resolvedUrl = toUrlString(prepared.request);
@@ -2741,7 +2918,17 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   tokenConsumed = getTokenTracker().consume(account.index);
                 }
 
-                const response = await fetch(prepared.request, prepared.init);
+                const requestSignal = createRequestSignal(
+                  abortSignal,
+                  effectiveTimeoutMs,
+                );
+                const rawResponse = await fetch(prepared.request, {
+                  ...prepared.init,
+                  signal: requestSignal,
+                });
+                const response = prepared.streaming && rawResponse.ok
+                  ? await waitForResponseStart(rawResponse, requestSignal)
+                  : rawResponse;
                 pushDebug(`status=${response.status} ${response.statusText}`);
 
 
@@ -3270,6 +3457,41 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   tokenConsumed = false;
                 }
 
+                if (abortSignal?.aborted) {
+                  pushDebug("user-interrupted: stopping request loop");
+                  throw error;
+                }
+
+                if (
+                  error instanceof Error &&
+                  (error.name === "AbortError" || error.name === "TimeoutError")
+                ) {
+                  const timeoutSeconds = Math.round(effectiveTimeoutMs / 1000);
+                  pushDebug(
+                    `request-timeout: account ${account.index} stuck for ${timeoutSeconds}s, rotating`,
+                  );
+                  getHealthTracker().recordFailure(account.index);
+                  accountManager.markAccountCoolingDown(
+                    account,
+                    60_000,
+                    "network-error",
+                  );
+                  try {
+                    await accountManager.saveToDisk();
+                  } catch (saveError) {
+                    log.error("failed-to-persist-timeout-cooldown", {
+                      error: String(saveError),
+                    });
+                  }
+                  await showToast(
+                    `Account request timed out after ${timeoutSeconds}s. Rotating to the next available account.`,
+                    "warning",
+                  );
+                  shouldSwitchAccount = true;
+                  lastError = error;
+                  break;
+                }
+
                 // Handle recoverable thinking errors - retry with forced recovery
                 if (error instanceof Error && error.message === "THINKING_RECOVERY_NEEDED") {
                   // Only retry once with forced recovery to avoid infinite loops
@@ -3386,6 +3608,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
           // CLI flow (`opencode auth login`) passes an inputs object.
           if (inputs) {
             const accounts: Array<Extract<AntigravityTokenExchangeResult, { type: "success" }>> = [];
+            let persistenceFailure: string | undefined;
             const noBrowser = inputs.noBrowser === "true" || inputs["no-browser"] === "true";
             const useManualMode = noBrowser || shouldSkipLocalServer();
 
@@ -3965,46 +4188,71 @@ export const createAntigravityPlugin = (providerId: string) => async (
               accounts.push(result);
 
               try {
-                await client.tui.showToast({
-                  body: {
-                    message: `Account ${accounts.length} authenticated${result.email ? ` (${result.email})` : ""}`,
-                    variant: "success",
-                  },
-                });
-              } catch {
-              }
-
-              try {
                 if (refreshAccountIndex !== undefined) {
-                  const currentStorage = await loadAccounts();
-                  if (currentStorage) {
-                    const updatedAccounts = [...currentStorage.accounts];
-                    const parts = parseRefreshParts(result.refresh);
-                    if (parts.refreshToken) {
-                      updatedAccounts[refreshAccountIndex] = {
-                        email: result.email ?? updatedAccounts[refreshAccountIndex]?.email,
-                        refreshToken: parts.refreshToken,
-                        projectId: parts.projectId ?? updatedAccounts[refreshAccountIndex]?.projectId,
-                        managedProjectId: parts.managedProjectId ?? updatedAccounts[refreshAccountIndex]?.managedProjectId,
-                        addedAt: updatedAccounts[refreshAccountIndex]?.addedAt ?? Date.now(),
-                        lastUsed: Date.now(),
-                      };
-                      await saveAccounts({
-                        version: 4,
-                        accounts: updatedAccounts,
-                        activeIndex: currentStorage.activeIndex,
-                        activeIndexByFamily: currentStorage.activeIndexByFamily,
-                      });
-                    }
+                  const currentStorage = await loadAccounts({
+                    throwOnError: true,
+                  });
+                  const existingAccount =
+                    currentStorage?.accounts[refreshAccountIndex];
+                  if (!currentStorage || !existingAccount) {
+                    throw new Error(
+                      `Account ${refreshAccountIndex + 1} no longer exists in storage`,
+                    );
                   }
+                  const updatedAccounts = [...currentStorage.accounts];
+                  const parts = parseRefreshParts(result.refresh);
+                  if (!parts.refreshToken) {
+                    throw new Error("Refreshed account did not return a refresh token");
+                  }
+                  updatedAccounts[refreshAccountIndex] = {
+                    ...existingAccount,
+                    email: result.email ?? existingAccount.email,
+                    refreshToken: parts.refreshToken,
+                    projectId: parts.projectId ?? existingAccount.projectId,
+                    managedProjectId:
+                      parts.managedProjectId ?? existingAccount.managedProjectId,
+                    lastUsed: Date.now(),
+                  };
+                  await saveAccounts({
+                    ...currentStorage,
+                    accounts: updatedAccounts,
+                  });
                 } else {
                   const isFirstAccount = accounts.length === 1;
                   await persistAccountPool([result], isFirstAccount && startFresh);
                 }
-              } catch {
+                try {
+                  await client.tui.showToast({
+                    body: {
+                      message: `Account ${accounts.length} authenticated and saved${result.email ? ` (${result.email})` : ""}`,
+                      variant: "success",
+                    },
+                  });
+                } catch {
+                  // Toast display is best-effort.
+                }
+              } catch (error) {
+                const reason = error instanceof Error ? error.message : String(error);
+                persistenceFailure = reason;
+                console.warn(
+                  `[opencode-antigravity-auth] Authenticated, but failed to persist account data: ${reason}`,
+                );
+                try {
+                  const compactReason = reason.length > 120
+                    ? `${reason.slice(0, 117)}...`
+                    : reason;
+                  await client.tui.showToast({
+                    body: {
+                      message: `Authenticated, but account data was not saved: ${compactReason}`,
+                      variant: "error",
+                    },
+                  });
+                } catch {
+                  // Toast display is best-effort.
+                }
               }
 
-              if (refreshAccountIndex !== undefined) {
+              if (refreshAccountIndex !== undefined || persistenceFailure) {
                 break;
               }
 
@@ -4048,15 +4296,20 @@ export const createAntigravityPlugin = (providerId: string) => async (
             } catch {
             }
 
-            const successMessage = refreshAccountIndex !== undefined
-              ? `Token refreshed successfully.`
-              : `Multi-account setup complete (${actualAccountCount} account(s)).`;
+            const successMessage = persistenceFailure
+              ? `Authentication succeeded, but account data was not saved: ${persistenceFailure}`
+              : refreshAccountIndex !== undefined
+                ? `Token refreshed successfully.`
+                : `Multi-account setup complete (${actualAccountCount} account(s)).`;
 
             return {
               url: "",
               instructions: successMessage,
               method: "auto",
-              callback: async (): Promise<AntigravityTokenExchangeResult> => primary,
+              callback: async (): Promise<AntigravityTokenExchangeResult> =>
+                persistenceFailure
+                  ? { type: "failed", error: successMessage }
+                  : primary,
             };
           }
 
@@ -4127,7 +4380,20 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   if (result.type === "success") {
                     try {
                       await persistAccountPool([result], false);
-                    } catch {
+                    } catch (error) {
+                      const message = `Authenticated, but failed to save account data: ${error instanceof Error ? error.message : String(error)}`;
+                      console.warn(`[opencode-antigravity-auth] ${message}`);
+                      try {
+                        await client.tui.showToast({
+                          body: { message, variant: "error" },
+                        });
+                      } catch {
+                        // Toast display is best-effort.
+                      }
+                      return {
+                        type: "failed",
+                        error: message,
+                      };
                     }
 
                     const newTotal = existingCount + 1;
@@ -4178,8 +4444,20 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 try {
                   // TUI flow adds to existing accounts (non-destructive)
                   await persistAccountPool([result], false);
-                } catch {
-                  // ignore
+                } catch (error) {
+                  const message = `Authenticated, but failed to save account data: ${error instanceof Error ? error.message : String(error)}`;
+                  console.warn(`[opencode-antigravity-auth] ${message}`);
+                  try {
+                    await client.tui.showToast({
+                      body: { message, variant: "error" },
+                    });
+                  } catch {
+                    // Toast display is best-effort.
+                  }
+                  return {
+                    type: "failed",
+                    error: message,
+                  };
                 }
 
                 // Show appropriate toast message
@@ -4344,4 +4622,9 @@ export const __testExports = {
   verifyAccountAccess,
   resolveHeaderRoutingDecision,
   resolveQuotaFallbackHeaderStyle,
+  createRequestSignal,
+  waitForResponseStart,
+  resetActiveAccountManager: () => {
+    activeAccountManager = null;
+  },
 };

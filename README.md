@@ -1,8 +1,8 @@
 # Antigravity + Gemini CLI OAuth Plugin for Opencode
 
-[![npm version](https://img.shields.io/npm/v/opencode-antigravity-auth.svg)](https://www.npmjs.com/package/opencode-antigravity-auth)
-[![npm beta](https://img.shields.io/npm/v/opencode-antigravity-auth/beta.svg?label=beta)](https://www.npmjs.com/package/opencode-antigravity-auth)
-[![npm downloads](https://img.shields.io/npm/dw/opencode-antigravity-auth.svg)](https://www.npmjs.com/package/opencode-antigravity-auth)
+[![npm version](https://img.shields.io/npm/v/%40chrisgeo%2Fopencode-antigravity-auth.svg)](https://www.npmjs.com/package/@chrisgeo/opencode-antigravity-auth)
+[![npm beta](https://img.shields.io/npm/v/%40chrisgeo%2Fopencode-antigravity-auth/beta.svg?label=beta)](https://www.npmjs.com/package/@chrisgeo/opencode-antigravity-auth)
+[![npm downloads](https://img.shields.io/npm/dw/%40chrisgeo%2Fopencode-antigravity-auth.svg)](https://www.npmjs.com/package/@chrisgeo/opencode-antigravity-auth)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![X (Twitter)](https://img.shields.io/badge/X-@dopesalmon-000000?style=flat&logo=x)](https://x.com/dopesalmon)
 
@@ -47,7 +47,7 @@ Enable Opencode to authenticate against **Antigravity** (Google's IDE) via OAuth
 Paste this into any LLM agent (Claude Code, OpenCode, Cursor, etc.):
 
 ```
-Install the opencode-antigravity-auth plugin and add the Antigravity model definitions to ~/.config/opencode/opencode.json by following: https://raw.githubusercontent.com/NoeFabris/opencode-antigravity-auth/dev/README.md
+Install the @chrisgeo/opencode-antigravity-auth plugin by following: https://raw.githubusercontent.com/chrisgeo/opencode-antigravity-auth/main/README.md
 ```
 
 **Option B: Manual setup**
@@ -56,11 +56,14 @@ Install the opencode-antigravity-auth plugin and add the Antigravity model defin
 
    ```json
    {
-     "plugin": ["opencode-antigravity-auth@latest"]
+     "plugin": ["@chrisgeo/opencode-antigravity-auth@latest"]
    }
    ```
 
-   > Want bleeding-edge features? Use `opencode-antigravity-auth@beta` instead.
+   > Want bleeding-edge features? Use `@chrisgeo/opencode-antigravity-auth@beta` instead.
+
+   > Migrating from the unscoped package requires changing the entry manually. The old package cannot redirect OpenCode before it is loaded:
+   > `opencode-antigravity-auth@latest` → `@chrisgeo/opencode-antigravity-auth@latest`.
 
 2. **Login** with your Google account:
 
@@ -165,7 +168,7 @@ Add this to your `~/.config/opencode/opencode.json`:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-antigravity-auth@latest"],
+  "plugin": ["@chrisgeo/opencode-antigravity-auth@latest"],
   "provider": {
     "google": {
       "models": {
@@ -440,7 +443,7 @@ Invalid JSON payload received. Unknown name "parameters" at 'request.tools[0]'
 **Solutions:**
 1. **Update to latest beta:**
    ```json
-   { "plugin": ["opencode-antigravity-auth@beta"] }
+   { "plugin": ["@chrisgeo/opencode-antigravity-auth@beta"] }
    ```
 
 2. **Disable MCP servers** one-by-one to find the problematic one
@@ -599,7 +602,7 @@ The correct key is `plugin` (singular):
 
 ```json
 {
-  "plugin": ["opencode-antigravity-auth@beta"]
+  "plugin": ["@chrisgeo/opencode-antigravity-auth@beta"]
 }
 ```
 
@@ -610,7 +613,7 @@ The correct key is `plugin` (singular):
 ### Migrating Accounts Between Machines
 
 When copying `antigravity-accounts.json` to a new machine:
-1. Ensure the plugin is installed: `"plugin": ["opencode-antigravity-auth@beta"]`
+1. Ensure the plugin is installed: `"plugin": ["@chrisgeo/opencode-antigravity-auth@beta"]`
 2. Copy `~/.config/opencode/antigravity-accounts.json`
 3. If you get "API key missing" error, the refresh token may be invalid — re-authenticate
 
@@ -628,7 +631,7 @@ DCP creates synthetic assistant messages that lack thinking blocks. **List this 
 ```json
 {
   "plugin": [
-    "opencode-antigravity-auth@latest",
+    "@chrisgeo/opencode-antigravity-auth@latest",
     "@tarquinen/opencode-dcp@latest"
   ]
 }

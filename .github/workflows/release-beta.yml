@@ -26,7 +26,7 @@ jobs:
       - name: Use Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22.22.2
           registry-url: https://registry.npmjs.org
           always-auth: true
 
@@ -65,7 +65,7 @@ jobs:
           done
           
           # Also check npm for published beta versions
-          NPM_BETAS=$(npm view opencode-antigravity-auth versions --json 2>/dev/null | grep -oP "\"${BASE_VERSION}-beta\\.\\K[0-9]+" || echo "")
+          NPM_BETAS=$(npm view @chrisgeo/opencode-antigravity-auth versions --json 2>/dev/null | grep -oP "\"${BASE_VERSION}-beta\\.\\K[0-9]+" || echo "")
           for BETA_NUM in $NPM_BETAS; do
             if [ "$BETA_NUM" -gt "$HIGHEST_BETA" ]; then
               HIGHEST_BETA=$BETA_NUM
@@ -123,7 +123,7 @@ jobs:
 
       - name: Install dependencies
         if: steps.should_publish.outputs.should_publish == 'true'
-        run: npm install
+        run: npm ci
 
       - name: Run type check
         if: steps.should_publish.outputs.should_publish == 'true'
@@ -144,6 +144,10 @@ jobs:
           [ -f dist/index.js ] || { echo "dist/index.js missing" >&2; exit 1; }
           [ -f dist/index.d.ts ] || { echo "dist/index.d.ts missing" >&2; exit 1; }
           [ -d dist/src ] || { echo "dist/src/ missing" >&2; exit 1; }
+
+      - name: Verify packed artifact
+        if: steps.should_publish.outputs.should_publish == 'true'
+        run: npm run verify:pack
 
       - name: Create git tag
         if: steps.should_publish.outputs.should_publish == 'true'
@@ -196,7 +200,7 @@ jobs:
             echo ""
             printf '%s\n' '```json'
             printf '%s\n' '{'
-            printf '%s\n' "  \"plugin\": [\"opencode-antigravity-auth@${NEXT_VERSION}\"]"
+            printf '%s\n' "  \"plugin\": [\"@chrisgeo/opencode-antigravity-auth@${NEXT_VERSION}\"]"
             printf '%s\n' '}'
             printf '%s\n' '```'
             echo ""
@@ -204,7 +208,7 @@ jobs:
             echo ""
             printf '%s\n' '```json'
             printf '%s\n' '{'
-            printf '%s\n' '  "plugin": ["opencode-antigravity-auth@beta"]'
+            printf '%s\n' '  "plugin": ["@chrisgeo/opencode-antigravity-auth@beta"]'
             printf '%s\n' '}'
             printf '%s\n' '```'
             echo ""
@@ -249,5 +253,5 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Install:**" >> $GITHUB_STEP_SUMMARY
           echo '```json' >> $GITHUB_STEP_SUMMARY
-          echo '{ "plugin": ["opencode-antigravity-auth@beta"] }' >> $GITHUB_STEP_SUMMARY
+          echo '{ "plugin": ["@chrisgeo/opencode-antigravity-auth@beta"] }' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
