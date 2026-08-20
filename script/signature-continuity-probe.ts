@@ -22,7 +22,7 @@ import {
   ANTIGRAVITY_DEFAULT_PROJECT_ID,
   getAntigravityHeaders,
 } from "../src/constants";
-import type { OAuthAuthDetails, PluginClient } from "../src/plugin/types";
+import type { OAuthAuthDetails } from "../src/plugin/types";
 
 const MODEL = "gemini-3-flash";
 const ENDPOINT = `${ANTIGRAVITY_ENDPOINT}/v1internal:streamGenerateContent?alt=sse`;
@@ -65,7 +65,7 @@ async function bootstrap(acc: any, index: number): Promise<Account | null> {
   };
   let refreshed: OAuthAuthDetails | undefined;
   try {
-    refreshed = await refreshAccessToken(auth, {} as PluginClient, "google");
+    refreshed = await refreshAccessToken(auth);
   } catch {
     return null;
   }

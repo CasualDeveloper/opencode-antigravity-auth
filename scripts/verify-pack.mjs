@@ -20,6 +20,18 @@ try {
   }
   tarballPath = join(rootDirectory, filename)
 
+  const forbiddenFiles = (packResult[0]?.files ?? [])
+    .map((file) => file.path)
+    .filter((path) =>
+      path.includes("/v2/legacy-client.")
+      || path.includes("/plugin/cli.")
+      || path.includes("/plugin/ui/")
+      || path.includes("/plugin/recovery/index."),
+    )
+  if (forbiddenFiles.length > 0) {
+    throw new Error(`Packed artifact contains removed compatibility files: ${forbiddenFiles.join(", ")}`)
+  }
+
   execFileSync(
     "npm",
     [
@@ -37,9 +49,10 @@ try {
   const packageName = packageJson.name
   const smokeScript = [
     `const module = await import(${JSON.stringify(packageName)})`,
-    `for (const name of ["AntigravityCLIOAuthPlugin", "GoogleOAuthPlugin"]) {`,
-    `  if (typeof module[name] !== "function") throw new Error(\`Missing export: \${name}\`)`,
-    `}`,
+    `if (module.default?.id !== "opencode.provider.antigravity") throw new Error("Missing v2 plugin export")`,
+    `if (typeof module.default.setup !== "function") throw new Error("Missing v2 plugin setup")`,
+    `const unexpected = Object.keys(module).filter((name) => name !== "default")`,
+    `if (unexpected.length) throw new Error(\`Unexpected named exports: \${unexpected.join(", ")}\`)`,
   ].join("\n")
   execFileSync(
     process.execPath,
@@ -50,9 +63,10 @@ try {
   await writeFile(
     join(temporaryDirectory, "consumer.ts"),
     [
-      `import { AntigravityCLIOAuthPlugin, GoogleOAuthPlugin } from ${JSON.stringify(packageName)}`,
-      "void AntigravityCLIOAuthPlugin",
-      "void GoogleOAuthPlugin",
+      `import { Plugin } from "@opencode-ai/plugin"`,
+      `import antigravityAuthPlugin from ${JSON.stringify(packageName)}`,
+      "const plugin: Plugin.Plugin = antigravityAuthPlugin",
+      "void plugin",
     ].join("\n"),
   )
   await writeFile(

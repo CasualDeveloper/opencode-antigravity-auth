@@ -15,7 +15,7 @@ Enable Opencode to authenticate against **Antigravity** (Google's IDE) via OAuth
 - **Modern Gemini API support** — use Antigravity SDK-style API keys / Cloud Projects as Gemini backups or opt-in primary routing
 - **Legacy Gemini CLI quota support** — still available for compatibility and quota fallback
 - **Thinking models** — extended thinking for Claude and Gemini 3 with configurable budgets
-- **Google Search grounding** — enable web search for Gemini models (auto or always-on)
+- **Google Search grounding** — optional grounded search for broad web discovery
 - **Auto-recovery** — handles session errors and tool failures automatically
 - **Plugin compatible** — works alongside other OpenCode plugins (oh-my-opencode, dcp, etc.)
 
@@ -52,11 +52,11 @@ Install the @chrisgeo/opencode-antigravity-auth plugin by following: https://raw
 
 **Option B: Manual setup**
 
-1. **Add the plugin** to `~/.config/opencode/opencode.json`:
+1. **Add the plugin** to `~/.config/opencode/opencode.json` using the OpenCode V2 `plugins` key:
 
    ```json
    {
-     "plugin": ["@chrisgeo/opencode-antigravity-auth@latest"]
+     "plugins": ["@chrisgeo/opencode-antigravity-auth@latest"]
    }
    ```
 
@@ -68,17 +68,19 @@ Install the @chrisgeo/opencode-antigravity-auth plugin by following: https://raw
 2. **Login** with your Google account:
 
    ```bash
-   opencode auth login
+   opencode2 auth login
    ```
 
-3. **Models** — current OpenCode versions can load plugin models dynamically at runtime. If your OpenCode version still requires static provider config, choose one:
-   - Run `opencode auth login` → Google → OAuth with Google (Antigravity) → select **"Configure models in opencode.json"** (auto-configures all models)
-   - Or manually copy the [full configuration](#models) below
+   OpenCode V2 opens the Google authorization page and completes sign-in automatically through
+   `http://localhost:51121/oauth-callback`. If localhost is unavailable (for example, in a remote
+   or headless environment), the login dialog falls back to asking for the full redirected URL.
+
+3. **Models** are registered dynamically. No static provider configuration is required in OpenCode V2.
 
 4. **Use it:**
 
    ```bash
-   opencode run "Hello" --model=google/antigravity-claude-opus-4-6-thinking --variant=max
+   opencode2 run "Hello" --model=google/antigravity-claude-opus-4-6-thinking#max
    ```
 
 </details>
@@ -92,16 +94,16 @@ Install the @chrisgeo/opencode-antigravity-auth plugin by following: https://raw
    
    > **Note**: This path works on all platforms. On Windows, `~` resolves to your user home directory (e.g., `C:\Users\YourName`).
 
-2. Add the plugin to the `plugin` array
+2. Add the plugin to the V2 `plugins` array
 
-3. Add the model definitions from the [Full models configuration](#models) section
+3. Run `opencode2 auth login` and select Google Antigravity
 
 4. Set `provider` to `"google"` and choose a model
 
 ### Verification
 
 ```bash
-opencode run "Hello" --model=google/antigravity-claude-opus-4-6-thinking --variant=max
+opencode2 run "Hello" --model=google/antigravity-claude-opus-4-6-thinking#max
 ```
 
 </details>
@@ -168,7 +170,7 @@ Add this to your `~/.config/opencode/opencode.json`:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@chrisgeo/opencode-antigravity-auth@latest"],
+  "plugins": ["@chrisgeo/opencode-antigravity-auth@latest"],
   "provider": {
     "google": {
       "models": {
@@ -443,7 +445,7 @@ Invalid JSON payload received. Unknown name "parameters" at 'request.tools[0]'
 **Solutions:**
 1. **Update to latest beta:**
    ```json
-   { "plugin": ["@chrisgeo/opencode-antigravity-auth@beta"] }
+   { "plugins": ["@chrisgeo/opencode-antigravity-auth@beta"] }
    ```
 
 2. **Disable MCP servers** one-by-one to find the problematic one
@@ -528,6 +530,10 @@ If you encounter errors during a session:
 
 ### OAuth Callback Issues
 
+On a local OpenCode V2 installation, the callback is automatic. After Google redirects to
+`localhost:51121`, the browser should show **Authorization received** and OpenCode should finish
+the connection without asking for a code. Manual URL entry is only the fallback path.
+
 <details>
 <summary><b>Safari OAuth Callback Fails (macOS)</b></summary>
 
@@ -545,7 +551,7 @@ If you encounter errors during a session:
 2. **Disable HTTPS-Only Mode temporarily:**
    - Safari > Settings (⌘,) > Privacy
    - Uncheck "Enable HTTPS-Only Mode"
-   - Run `opencode auth login`
+   - Run `opencode2 auth login`
    - Re-enable after authentication
 
 </details>
@@ -562,14 +568,14 @@ lsof -i :51121
 kill -9 <PID>
 
 # Retry
-opencode auth login
+opencode2 auth login
 ```
 
 **Windows (PowerShell):**
 ```powershell
 netstat -ano | findstr :51121
 taskkill /PID <PID> /F
-opencode auth login
+opencode2 auth login
 ```
 
 </details>
@@ -590,30 +596,28 @@ ssh -L 51121:localhost:51121 user@remote
 
 **Docker / Containers:**
 - OAuth with localhost redirect doesn't work in containers
-- Wait 30s for manual URL flow, or use SSH port forwarding
+- OpenCode falls back to manual callback URL entry, or use SSH port forwarding
 
 </details>
 
 ---
 
-### Configuration Key Typo: `plugin` not `plugins`
+### OpenCode V2 Configuration
 
-The correct key is `plugin` (singular):
+Use the V2 `plugins` key:
 
 ```json
 {
-  "plugin": ["@chrisgeo/opencode-antigravity-auth@beta"]
+  "plugins": ["@chrisgeo/opencode-antigravity-auth@beta"]
 }
 ```
-
-**Not** `"plugins"` (will cause "Unrecognized key" error).
 
 ---
 
 ### Migrating Accounts Between Machines
 
 When copying `antigravity-accounts.json` to a new machine:
-1. Ensure the plugin is installed: `"plugin": ["@chrisgeo/opencode-antigravity-auth@beta"]`
+1. Ensure the plugin is installed: `"plugins": ["@chrisgeo/opencode-antigravity-auth@beta"]`
 2. Copy `~/.config/opencode/antigravity-accounts.json`
 3. If you get "API key missing" error, the refresh token may be invalid — re-authenticate
 
@@ -630,7 +634,7 @@ DCP creates synthetic assistant messages that lack thinking blocks. **List this 
 
 ```json
 {
-  "plugin": [
+  "plugins": [
     "@chrisgeo/opencode-antigravity-auth@latest",
     "@tarquinen/opencode-dcp@latest"
   ]

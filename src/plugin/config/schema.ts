@@ -139,6 +139,13 @@ export const AntigravityConfigSchema = z.object({
    * @default false
    */
   debug_tui: z.boolean().default(false),
+
+  /**
+   * Expose the Google-grounded search tool to models.
+   * Disable this when OpenCode's targeted web and API tools should be used exclusively.
+   * @default true
+   */
+  google_search_enabled: z.boolean().default(true),
   
   /**
    * Custom directory for debug logs.
@@ -520,6 +527,7 @@ export const DEFAULT_CONFIG: AntigravityConfig = {
   toast_scope: 'root_only',
   debug: false,
   debug_tui: false,
+  google_search_enabled: true,
   keep_thinking: false,
   session_recovery: true,
   auto_resume: true,

@@ -27,6 +27,9 @@ jobs:
       - name: Run type check
         run: npm run typecheck
 
+      - name: Check V2 workflow snippets
+        run: npm run check:v2-workflows
+
       - name: Run tests
         run: npm test
 

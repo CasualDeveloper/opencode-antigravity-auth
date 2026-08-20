@@ -28,6 +28,11 @@
       "default": false,
       "type": "boolean"
     },
+    "google_search_enabled": {
+      "default": true,
+      "type": "boolean",
+      "description": "Expose the Google-grounded search tool. Disable it to rely exclusively on OpenCode's targeted web and API tools."
+    },
     "log_dir": {
       "type": "string",
       "description": "Custom directory for debug logs."

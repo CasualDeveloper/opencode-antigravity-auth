@@ -17,7 +17,7 @@
  */
 
 import type { AccountManager, ManagedAccount } from "./accounts";
-import type { PluginClient, OAuthAuthDetails } from "./types";
+import type { OAuthAuthDetails } from "./types";
 import { refreshAccessToken } from "./token";
 import { createLogger } from "./logger";
 
@@ -62,6 +62,7 @@ interface RefreshFailureState {
 /** State for tracking refresh operations */
 interface RefreshQueueState {
   isRunning: boolean;
+  initialTimeoutHandle: ReturnType<typeof setTimeout> | null;
   intervalHandle: ReturnType<typeof setInterval> | null;
   isRefreshing: boolean;
   lastCheckTime: number;
@@ -80,8 +81,6 @@ interface RefreshQueueState {
  */
 export class ProactiveRefreshQueue {
   private readonly config: ProactiveRefreshConfig;
-  private readonly client: PluginClient;
-  private readonly providerId: string;
   private accountManager: AccountManager | null = null;
 
   /**
@@ -92,6 +91,7 @@ export class ProactiveRefreshQueue {
 
   private state: RefreshQueueState = {
     isRunning: false,
+    initialTimeoutHandle: null,
     intervalHandle: null,
     isRefreshing: false,
     lastCheckTime: 0,
@@ -101,12 +101,8 @@ export class ProactiveRefreshQueue {
   };
 
   constructor(
-    client: PluginClient,
-    providerId: string,
     config?: Partial<ProactiveRefreshConfig>,
   ) {
-    this.client = client;
-    this.providerId = providerId;
     this.config = {
       ...DEFAULT_PROACTIVE_REFRESH_CONFIG,
       ...config,
@@ -352,7 +348,7 @@ export class ProactiveRefreshQueue {
       minutesUntilExpiry,
     });
 
-    return refreshAccessToken(auth, this.client, this.providerId);
+    return refreshAccessToken(auth);
   }
 
   /**
@@ -377,7 +373,8 @@ export class ProactiveRefreshQueue {
     });
 
     // Run initial check after a short delay (let things settle)
-    setTimeout(() => {
+    this.state.initialTimeoutHandle = setTimeout(() => {
+      this.state.initialTimeoutHandle = null;
       if (this.state.isRunning) {
         this.runRefreshCheck().catch((error) => {
           log.error("Initial check failed", {
@@ -406,6 +403,11 @@ export class ProactiveRefreshQueue {
     }
 
     this.state.isRunning = false;
+
+    if (this.state.initialTimeoutHandle) {
+      clearTimeout(this.state.initialTimeoutHandle);
+      this.state.initialTimeoutHandle = null;
+    }
 
     if (this.state.intervalHandle) {
       clearInterval(this.state.intervalHandle);
@@ -444,9 +446,7 @@ export class ProactiveRefreshQueue {
  * Create a proactive refresh queue instance.
  */
 export function createProactiveRefreshQueue(
-  client: PluginClient,
-  providerId: string,
   config?: Partial<ProactiveRefreshConfig>,
 ): ProactiveRefreshQueue {
-  return new ProactiveRefreshQueue(client, providerId, config);
+  return new ProactiveRefreshQueue(config);
 }

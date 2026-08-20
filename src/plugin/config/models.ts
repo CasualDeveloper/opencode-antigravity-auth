@@ -1,5 +1,3 @@
-import type { ProviderModel } from "../types";
-
 export type ModelThinkingLevel = "minimal" | "low" | "medium" | "high";
 
 export interface ModelThinkingConfig {
@@ -23,7 +21,7 @@ export interface ModelModalities {
   output: ModelModality[];
 }
 
-export interface OpencodeModelDefinition extends ProviderModel {
+export interface OpencodeModelDefinition {
   name: string;
   temperature?: boolean;
   limit: ModelLimit;
@@ -338,8 +336,4 @@ export function modelsFromAntigravityAvailableModels(
   }
 
   return definitions;
-}
-
-export function mergeModelDefinitions(...definitions: Record<string, ProviderModel>[]): Record<string, ProviderModel> {
-  return Object.assign({}, ...definitions);
 }

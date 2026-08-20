@@ -3,6 +3,24 @@ import { describe, expect, it } from "vitest";
 
 import { AgySdkCloudProjectSchema, DEFAULT_CONFIG } from "./schema";
 
+describe("google_search_enabled config", () => {
+  it("keeps Google Search available by default", () => {
+    expect(DEFAULT_CONFIG).toHaveProperty("google_search_enabled", true);
+  });
+
+  it("documents the Google Search switch in the JSON schema", () => {
+    const schemaPath = new URL("../../../assets/antigravity.schema.json", import.meta.url);
+    const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as {
+      properties?: Record<string, { type?: string; default?: unknown; description?: string }>;
+    };
+
+    expect(schema.properties?.google_search_enabled).toMatchObject({
+      type: "boolean",
+      default: true,
+    });
+  });
+});
+
 describe("cli_first config", () => {
   it("includes cli_first default in DEFAULT_CONFIG", () => {
     expect(DEFAULT_CONFIG).toHaveProperty("cli_first", false);

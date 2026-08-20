@@ -636,6 +636,46 @@ describe("request.ts", () => {
       expect(result.streaming).toBe(false);
     });
 
+    it("pairs parallel same-name Gemini tool calls with their results", () => {
+      const result = prepareAntigravityRequest(
+        "https://generativelanguage.googleapis.com/v1beta/models/antigravity-gemini-3.1-pro:generateContent",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            contents: [
+              {
+                role: "model",
+                parts: [
+                  { functionCall: { name: "read", args: { path: "alpha.txt" } } },
+                  { functionCall: { name: "read", args: { path: "beta.txt" } } },
+                ],
+              },
+              {
+                role: "user",
+                parts: [
+                  { functionResponse: { name: "read", response: { content: "alpha" } } },
+                  { functionResponse: { name: "read", response: { content: "beta" } } },
+                ],
+              },
+            ],
+          }),
+        },
+        mockAccessToken,
+        mockProjectId,
+      );
+
+      const body = JSON.parse(result.init.body as string);
+      const calls = body.request.contents[0].parts.map(
+        (part: { functionCall: { id?: string } }) => part.functionCall.id,
+      );
+      const responses = body.request.contents[1].parts.map(
+        (part: { functionResponse: { id?: string } }) => part.functionResponse.id,
+      );
+
+      expect(calls).toEqual(["tool-call-1", "tool-call-2"]);
+      expect(responses).toEqual(calls);
+    });
+
     it("sets Authorization header with Bearer token", () => {
       const result = prepareAntigravityRequest(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent",

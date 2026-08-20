@@ -22,9 +22,15 @@ Most settings have sensible defaults — only configure what you need.
 }
 ```
 
-**With web search enabled:**
+**Google-grounded search:**
 
-The plugin provides a `google_search` tool that the model can call to search the web. No configuration is needed - the tool is always available.
+The plugin provides a `google_search` tool for broad discovery across unknown sources or current information. It is available by default. Disable it when you want models to rely exclusively on OpenCode's targeted web and API tools:
+
+```json
+{
+  "google_search_enabled": false
+}
+```
 
 ---
 
@@ -35,6 +41,7 @@ Settings that affect how the model thinks and responds.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `keep_thinking` | `false` | Preserve Claude's thinking blocks across turns. **Warning:** enabling may degrade model stability. |
+| `google_search_enabled` | `true` | Expose the Google-grounded search tool to models. |
 | `session_recovery` | `true` | Auto-recover from tool_result_missing errors |
 | `auto_resume` | `false` | Auto-send resume prompt after recovery |
 | `resume_text` | `"continue"` | Text to send when auto-resuming |

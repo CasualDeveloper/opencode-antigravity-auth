@@ -2,14 +2,10 @@
  * Structured Logger for Antigravity Plugin
  *
  * Logging behavior:
- * - debug controls file logs only (via debug.ts)
- * - debug_tui controls TUI log panel only
- * - either sink can be enabled independently
  * - OPENCODE_ANTIGRAVITY_CONSOLE_LOG=1 → console output (independent of debug flags)
+ * - request diagnostics continue to use the dedicated file logger in debug.ts
  */
 
-import type { PluginClient } from "./types";
-import { isDebugTuiEnabled } from "./debug";
 import {
   isTruthyFlag,
   writeConsoleLog,
@@ -26,21 +22,11 @@ export interface Logger {
   error(message: string, extra?: Record<string, unknown>): void;
 }
 
-let _client: PluginClient | null = null;
-
 /**
  * Check if console logging is enabled via environment variable.
  */
 function isConsoleLogEnabled(): boolean {
   return isTruthyFlag(process.env[ENV_CONSOLE_LOG]);
-}
-
-/**
- * Initialize the logger with the plugin client.
- * Must be called during plugin initialization to enable TUI logging.
- */
-export function initLogger(client: PluginClient): void {
-  _client = client;
 }
 
 /**
@@ -60,27 +46,11 @@ export function createLogger(module: string): Logger {
   const service = `antigravity.${module}`;
 
   const log = (level: LogLevel, message: string, extra?: Record<string, unknown>): void => {
-    // TUI logging: controlled only by debug_tui policy
-    if (isDebugTuiEnabled()) {
-      const app = _client?.app;
-      if (app && typeof app.log === "function") {
-        app
-          .log({
-            body: { service, level, message, extra },
-          })
-          .catch(() => {
-            // Silently ignore logging errors
-          });
-      }
-    }
-
-    // Console fallback: when env var is set (independent of debug flags)
     if (isConsoleLogEnabled()) {
       const prefix = `[${service}]`;
       const args = extra ? [prefix, message, extra] : [prefix, message];
       writeConsoleLog(level, ...args);
     }
-    // If neither TUI nor console logging is enabled, log is silently discarded
   };
 
   return {

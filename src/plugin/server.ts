@@ -3,14 +3,31 @@ import { readFileSync, existsSync } from "node:fs";
 
 import { ANTIGRAVITY_REDIRECT_URI } from "../constants";
 
-interface OAuthListenerOptions {
+export interface OAuthListenerOptions {
   /**
    * How long to wait for the OAuth redirect before timing out (in milliseconds).
    */
   timeoutMs?: number;
+  /**
+   * OAuth state generated for this authorization attempt. Mismatched callbacks
+   * are rejected without consuming the listener.
+   */
+  expectedState: string;
+  /**
+   * Override the registered redirect URI. Intended for isolated tests.
+   */
+  redirectUri?: string | URL;
+  /**
+   * Override the network interface used by the listener.
+   */
+  bindAddress?: string;
 }
 
 export interface OAuthListener {
+  /**
+   * Effective callback URL, including an ephemeral test port when requested.
+   */
+  readonly callbackUrl: URL;
   /**
    * Resolves with the callback URL once Google redirects back to the local server.
    */
@@ -20,9 +37,6 @@ export interface OAuthListener {
    */
   close(): Promise<void>;
 }
-
-const redirectUri = new URL(ANTIGRAVITY_REDIRECT_URI);
-const callbackPath = redirectUri.pathname || "/";
 
 /**
  * Detect if running in OrbStack Docker with --network host mode.
@@ -103,6 +117,23 @@ function isRemoteEnvironment(): boolean {
   return false;
 }
 
+function isEnabledFlag(value: string | undefined): boolean {
+  return value === "1" || value?.toLowerCase() === "true";
+}
+
+/**
+ * Whether the browser and plugin process are unlikely to share localhost.
+ * These environments retain the manual callback flow instead of opening an
+ * unreachable listener and waiting for it to time out.
+ */
+export function shouldUseManualOAuthCallback(): boolean {
+  if (isEnabledFlag(process.env.OPENCODE_HEADLESS)) return true;
+  if (isWSL() || isRemoteEnvironment()) return true;
+  return process.platform === "linux"
+    && !process.env.DISPLAY
+    && !process.env.WAYLAND_DISPLAY;
+}
+
 /**
  * Determine the best bind address for the OAuth callback server.
  * 
@@ -138,18 +169,26 @@ function getBindAddress(): string {
  * and resolves with the captured callback URL.
  */
 export async function startOAuthListener(
-  { timeoutMs = 5 * 60 * 1000 }: OAuthListenerOptions = {},
+  {
+    timeoutMs = 5 * 60 * 1000,
+    expectedState,
+    redirectUri: redirectUriOverride = ANTIGRAVITY_REDIRECT_URI,
+    bindAddress: bindAddressOverride,
+  }: OAuthListenerOptions,
 ): Promise<OAuthListener> {
+  if (!expectedState) throw new Error("OAuth callback listener requires an expected state");
+  const redirectUri = new URL(redirectUriOverride);
+  const callbackPath = redirectUri.pathname || "/";
   const port = redirectUri.port
     ? Number.parseInt(redirectUri.port, 10)
     : redirectUri.protocol === "https:"
     ? 443
     : 80;
-  const origin = `${redirectUri.protocol}//${redirectUri.host}`;
+  let origin = `${redirectUri.protocol}//${redirectUri.host}`;
 
   let settled = false;
-  let resolveCallback: (url: URL) => void;
-  let rejectCallback: (error: Error) => void;
+  let resolveCallback!: (url: URL) => void;
+  let rejectCallback!: (error: Error) => void;
   let timeoutHandle: NodeJS.Timeout;
   const callbackPromise = new Promise<URL>((resolve, reject) => {
     resolveCallback = (url: URL) => {
@@ -165,6 +204,7 @@ export async function startOAuthListener(
       reject(error);
     };
   });
+  callbackPromise.catch(() => {});
 
 const successResponse = `<!DOCTYPE html>
 <html lang="en">
@@ -275,8 +315,8 @@ const successResponse = `<!DOCTYPE html>
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7" />
         </svg>
       </div>
-      <h1>All set!</h1>
-      <p>You've successfully authenticated with Antigravity. You can now return to Opencode.</p>
+      <h1>Authorization received</h1>
+      <p>OpenCode is completing your Antigravity sign-in. You can now return to OpenCode.</p>
       <button class="btn" onclick="closeWindow()">Close this tab</button>
       <div class="sub-text">Usage Tip: Most browsers block auto-closing. If the button doesn't work, please close the tab manually.</div>
     </div>
@@ -292,27 +332,78 @@ const successResponse = `<!DOCTYPE html>
   </body>
 </html>`;
 
+  const oauthErrorResponse = `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Authentication Not Completed</title>
+  </head>
+  <body>
+    <h1>Sign-in was not completed</h1>
+    <p>Return to OpenCode for details or start the connection again.</p>
+  </body>
+</html>`;
+
   timeoutHandle = setTimeout(() => {
     rejectCallback(new Error("Timed out waiting for OAuth callback"));
   }, timeoutMs);
   timeoutHandle.unref?.();
 
   const server = createServer((request, response) => {
+    if (request.method !== "GET") {
+      response.writeHead(405, {
+        "Allow": "GET",
+        "Cache-Control": "no-store",
+        "Content-Type": "text/plain; charset=utf-8",
+      });
+      response.end("Method not allowed");
+      return;
+    }
+
     if (!request.url) {
-      response.writeHead(400, { "Content-Type": "text/plain" });
+      response.writeHead(400, {
+        "Cache-Control": "no-store",
+        "Content-Type": "text/plain; charset=utf-8",
+      });
       response.end("Invalid request");
       return;
     }
 
     const url = new URL(request.url, origin);
     if (url.pathname !== callbackPath) {
-      response.writeHead(404, { "Content-Type": "text/plain" });
+      response.writeHead(404, {
+        "Cache-Control": "no-store",
+        "Content-Type": "text/plain; charset=utf-8",
+      });
       response.end("Not found");
       return;
     }
 
-    response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    response.end(successResponse);
+    if (url.searchParams.get("state") !== expectedState) {
+      response.writeHead(400, {
+        "Cache-Control": "no-store",
+        "Content-Type": "text/plain; charset=utf-8",
+      });
+      response.end("Invalid OAuth state");
+      return;
+    }
+
+    const oauthError = url.searchParams.get("error");
+    if (!oauthError && !url.searchParams.get("code")) {
+      response.writeHead(400, {
+        "Cache-Control": "no-store",
+        "Content-Type": "text/plain; charset=utf-8",
+      });
+      response.end("Missing OAuth authorization result");
+      return;
+    }
+
+    response.writeHead(200, {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/html; charset=utf-8",
+    });
+    response.end(oauthError ? oauthErrorResponse : successResponse);
 
     resolveCallback(url);
 
@@ -321,33 +412,45 @@ const successResponse = `<!DOCTYPE html>
     });
   });
 
-  const bindAddress = getBindAddress();
+  const bindAddress = bindAddressOverride ?? getBindAddress();
+  const callbackUrl = new URL(redirectUri);
   
-  await new Promise<void>((resolve, reject) => {
-    const handleError = (error: NodeJS.ErrnoException) => {
-      server.off("error", handleError);
-      if (error.code === "EADDRINUSE") {
-        reject(new Error(
-          `Port ${port} is already in use. ` +
-          `Another process is occupying this port. ` +
-          `Please terminate the process or try again later.`
-        ));
-        return;
-      }
-      reject(error);
-    };
-    server.once("error", handleError);
-    server.listen(port, bindAddress, () => {
-      server.off("error", handleError);
-      resolve();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const handleError = (error: NodeJS.ErrnoException) => {
+        server.off("error", handleError);
+        if (error.code === "EADDRINUSE") {
+          reject(new Error(
+            `Port ${port} is already in use. ` +
+            `Another process is occupying this port. ` +
+            `Please terminate the process or try again later.`
+          ));
+          return;
+        }
+        reject(error);
+      };
+      server.once("error", handleError);
+      server.listen(port, bindAddress, () => {
+        server.off("error", handleError);
+        const address = server.address();
+        if (address && typeof address !== "string") {
+          callbackUrl.port = String(address.port);
+          origin = callbackUrl.origin;
+        }
+        resolve();
+      });
     });
-  });
+  } catch (error) {
+    rejectCallback(error instanceof Error ? error : new Error(String(error)));
+    throw error;
+  }
 
   server.on("error", (error) => {
     rejectCallback(error instanceof Error ? error : new Error(String(error)));
   });
 
   return {
+    callbackUrl,
     waitForCallback: () => callbackPromise,
     close: () =>
       new Promise<void>((resolve, reject) => {

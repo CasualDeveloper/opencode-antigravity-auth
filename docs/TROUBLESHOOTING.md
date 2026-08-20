@@ -94,15 +94,13 @@ Type `continue` to trigger auto-recovery, or use `/undo` to roll back.
 
 ### Configuration Key Typo
 
-The correct key is `plugin` (singular):
+The correct OpenCode V2 key is `plugins` (plural):
 
 ```json
 {
-  "plugin": ["@chrisgeo/opencode-antigravity-auth@latest"]
+  "plugins": ["@chrisgeo/opencode-antigravity-auth@latest"]
 }
 ```
-
-**Not** `"plugins"` (will cause "Unrecognized key" error).
 
 ### "Invalid SemVer: beta"
 
@@ -185,7 +183,7 @@ Invalid JSON payload received. Unknown name "parameters" at 'request.tools[0]'
 **Solutions:**
 1. **Update to latest beta:**
    ```json
-   { "plugin": ["@chrisgeo/opencode-antigravity-auth@beta"] }
+   { "plugins": ["@chrisgeo/opencode-antigravity-auth@beta"] }
    ```
 
 2. **Disable MCP servers** one-by-one to find the problematic one
@@ -275,7 +273,7 @@ If you only have one account, you'll likely have a better experience using [Anti
 If adding new accounts:
 1. Delete accounts file: `rm ~/.config/opencode/antigravity-accounts.json`
 2. Re-authenticate: `opencode auth login`
-3. Update to latest beta: `"plugin": ["@chrisgeo/opencode-antigravity-auth@beta"]`
+3. Update to latest beta: `"plugins": ["@chrisgeo/opencode-antigravity-auth@beta"]`
 4. Consider "warming up" the account in Antigravity IDE first
 
 </details>
@@ -379,7 +377,7 @@ ssh -L 51121:localhost:51121 user@remote
 ## Migrating Accounts Between Machines
 
 When copying `antigravity-accounts.json` to a new machine:
-1. Ensure the plugin is installed: `"plugin": ["@chrisgeo/opencode-antigravity-auth@beta"]`
+1. Ensure the plugin is installed: `"plugins": ["@chrisgeo/opencode-antigravity-auth@beta"]`
 2. Copy `~/.config/opencode/antigravity-accounts.json`
 3. If you get "API key missing" error, the refresh token may be invalid — re-authenticate
 
@@ -393,7 +391,7 @@ DCP creates synthetic assistant messages that lack thinking blocks. **List this 
 
 ```json
 {
-  "plugin": [
+  "plugins": [
     "@chrisgeo/opencode-antigravity-auth@latest",
     "@tarquinen/opencode-dcp@latest"
   ]

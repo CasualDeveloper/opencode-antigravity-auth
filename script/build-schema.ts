@@ -21,6 +21,8 @@ const optionDescriptions: Record<string, string> = {
     "Suppress most toast notifications (rate limit, account switching). Recovery toasts always shown.",
   debug:
     "Enable debug logging to file.",
+  google_search_enabled:
+    "Expose the Google-grounded search tool. Disable it to rely exclusively on OpenCode's targeted web and API tools.",
   log_dir:
     "Custom directory for debug logs.",
   keep_thinking:

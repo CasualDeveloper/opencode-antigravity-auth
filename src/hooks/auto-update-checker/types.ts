@@ -4,7 +4,7 @@ export interface NpmDistTags {
 }
 
 export interface OpencodeConfig {
-  plugin?: string[];
+  plugins?: Array<string | { package?: string }>;
   [key: string]: unknown;
 }
 
@@ -23,6 +23,5 @@ export interface UpdateCheckResult {
 }
 
 export interface AutoUpdateCheckerOptions {
-  showStartupToast?: boolean;
   autoUpdate?: boolean;
 }

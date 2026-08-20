@@ -41,7 +41,7 @@ describe("isLocalDevMode / getLocalDevPath", () => {
       p.endsWith("opencode.json"),
     );
     fsMock.readFileSync.mockReturnValue(
-      JSON.stringify({ plugin: ["some-other-plugin@1.0.0"] }),
+      JSON.stringify({ plugins: ["some-other-plugin@1.0.0"] }),
     );
     expect(getLocalDevPath("/project")).toBeNull();
   });
@@ -53,7 +53,7 @@ describe("isLocalDevMode / getLocalDevPath", () => {
     );
     fsMock.readFileSync.mockReturnValue(
       JSON.stringify({
-        plugin: ["file:///home/user/opencode-antigravity-auth/dist/plugin.js"],
+        plugins: ["file:///home/user/opencode-antigravity-auth/dist/plugin.js"],
       }),
     );
     const result = getLocalDevPath("/project");
@@ -68,7 +68,7 @@ describe("isLocalDevMode / getLocalDevPath", () => {
     fsMock.readFileSync.mockReturnValue(
       `{
         // dev plugin
-        "plugin": [
+        "plugins": [
           "file:///home/user/opencode-antigravity-auth/dist/plugin.js",
         ]
       }`,
@@ -101,7 +101,7 @@ describe("findPluginEntry", () => {
     const { findPluginEntry } = await import("./checker");
     fsMock.existsSync.mockImplementation((p: string) => p.endsWith("opencode.json"));
     fsMock.readFileSync.mockReturnValue(
-      JSON.stringify({ plugin: ["@chrisgeo/opencode-antigravity-auth"] }),
+      JSON.stringify({ plugins: ["@chrisgeo/opencode-antigravity-auth"] }),
     );
     const result = findPluginEntry("/project");
     expect(result).not.toBeNull();
@@ -113,7 +113,7 @@ describe("findPluginEntry", () => {
     const { findPluginEntry } = await import("./checker");
     fsMock.existsSync.mockImplementation((p: string) => p.endsWith("opencode.json"));
     fsMock.readFileSync.mockReturnValue(
-      JSON.stringify({ plugin: ["@chrisgeo/opencode-antigravity-auth@1.5.0"] }),
+      JSON.stringify({ plugins: ["@chrisgeo/opencode-antigravity-auth@1.5.0"] }),
     );
     const result = findPluginEntry("/project");
     expect(result).not.toBeNull();
@@ -121,14 +121,51 @@ describe("findPluginEntry", () => {
     expect(result!.pinnedVersion).toBe("1.5.0");
   });
 
+  it("reads versioned package entries from object-form V2 plugins", async () => {
+    const { findPluginEntry } = await import("./checker");
+    fsMock.existsSync.mockImplementation((p: string) => p.endsWith("opencode.json"));
+    fsMock.readFileSync.mockReturnValue(
+      JSON.stringify({ plugins: [{ package: "@chrisgeo/opencode-antigravity-auth@1.7.0" }] }),
+    );
+
+    expect(findPluginEntry("/project")).toMatchObject({
+      isPinned: true,
+      pinnedVersion: "1.7.0",
+    });
+  });
+
   it("returns isPinned=false for @latest entry", async () => {
     const { findPluginEntry } = await import("./checker");
     fsMock.existsSync.mockImplementation((p: string) => p.endsWith("opencode.json"));
     fsMock.readFileSync.mockReturnValue(
-      JSON.stringify({ plugin: ["@chrisgeo/opencode-antigravity-auth@latest"] }),
+      JSON.stringify({ plugins: ["@chrisgeo/opencode-antigravity-auth@latest"] }),
     );
     const result = findPluginEntry("/project");
     expect(result!.isPinned).toBe(false);
     expect(result!.pinnedVersion).toBeNull();
+  });
+});
+
+describe("updatePinnedVersion", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("updates entries in the v2 plugins array", async () => {
+    const { updatePinnedVersion } = await import("./checker");
+    fsMock.readFileSync.mockReturnValue(JSON.stringify({
+      plugins: ["@chrisgeo/opencode-antigravity-auth@1.7.0"],
+    }));
+
+    expect(updatePinnedVersion(
+      "/project/opencode.json",
+      "@chrisgeo/opencode-antigravity-auth@1.7.0",
+      "2.0.0",
+    )).toBe(true);
+    expect(fsMock.writeFileSync).toHaveBeenCalledWith(
+      "/project/opencode.json",
+      expect.stringContaining("@chrisgeo/opencode-antigravity-auth@2.0.0"),
+      "utf-8",
+    );
   });
 });

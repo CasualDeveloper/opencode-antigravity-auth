@@ -3,22 +3,9 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { PluginClient } from "./plugin/types";
 import { AccountManager } from "./plugin/accounts";
+import { formatRefreshParts } from "./plugin/auth";
 import { DEFAULT_CONFIG } from "./plugin/config";
-
-vi.mock("@opencode-ai/plugin", () => ({
-  tool: Object.assign(
-    (definition: unknown) => definition,
-    {
-      schema: {
-        string: () => ({ describe: () => ({}) }),
-        boolean: () => ({ optional: () => ({ default: () => ({ describe: () => ({}) }) }) }),
-        array: () => ({ optional: () => ({ describe: () => ({}) }) }),
-      },
-    },
-  ),
-}));
 
 // Mock storage so disk reads/writes are isolated from real config files.
 // Per-test we override `loadAccounts` to simulate "OAuth accounts on disk".
@@ -35,20 +22,24 @@ vi.mock("./plugin/storage", async (importOriginal) => {
   };
 });
 
-const { createAntigravityPlugin, loopEscapeTestHooks, __testExports } = await import("./plugin");
+const {
+  createAntigravityRequestPipeline,
+  loopEscapeTestHooks,
+  __testExports,
+} = await import("./plugin");
 const storageModule = await import("./plugin/storage");
 const { resetModelCatalogsForTests } = await import("./plugin/model-catalog");
 const { resetAgySdkCredentialStateForTests } = await import("./plugin/api-key");
 
-const client = {
-  tui: { showToast: vi.fn(async () => undefined) },
-  app: { log: vi.fn(async () => undefined) },
-} as unknown as PluginClient;
+async function requireRequestPipeline(
+  options: Parameters<typeof createAntigravityRequestPipeline>[0],
+) {
+  const pipeline = await createAntigravityRequestPipeline(options);
+  if (!pipeline) throw new Error("Expected the Antigravity request pipeline to be available");
+  return pipeline;
+}
 
-// provider.models() discovery (exercised by some tests below) populates the
-// module-level live model catalog as a side effect. Reset it after every test
-// so one test's (possibly sparse, mock-driven) discovery fetch can't leak
-// into another test's agy-sdk routing assertions.
+// Keep process-wide routing state isolated between request-pipeline tests.
 afterEach(() => {
   resetModelCatalogsForTests();
   __testExports.resetActiveAccountManager();
@@ -108,346 +99,185 @@ describe("request timeout signals", () => {
       __testExports.waitForResponseStart(response, signal),
     ).rejects.toMatchObject({ name: "TimeoutError" });
   });
-});
 
-describe("google_search project context", () => {
-  it("resolves and uses the managed project before searching", async () => {
-    const refreshToken = `search-refresh-${Date.now()}`;
-    vi.mocked(storageModule.loadAccounts).mockResolvedValue({
-      version: 4,
-      accounts: [{
-        refreshToken,
-        projectId: "user-project",
-        addedAt: 1,
-        lastUsed: 1,
-      }],
-      activeIndex: 0,
+  it("preserves fragmented SSE while waiting for meaningful output", async () => {
+    const encoder = new TextEncoder();
+    const chunks = [
+      'data: {"response":{"usageMetadata":{"promptTokenCount":1}}}\n\n',
+      'data: {"response":{"candidates":[{"content":{"parts":[{"te',
+      'xt":"continued"}]},"finishReason":"STOP"}]}}\n\n',
+    ];
+    const response = new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const next = chunks.shift();
+        if (next === undefined) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(encoder.encode(next));
+      },
+    }), {
+      headers: { "Content-Type": "text/event-stream" },
     });
 
-    let projectResolutionCalls = 0;
-    const searchProjects: string[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.includes("loadCodeAssist")) {
-        projectResolutionCalls += 1;
-        return new Response(JSON.stringify({
-          cloudaicompanionProject: "managed-project",
-        }));
-      }
-      if (url.includes("generateContent")) {
-        const body = JSON.parse(String(init?.body)) as { project?: string };
-        if (body.project) searchProjects.push(body.project);
-        return new Response(JSON.stringify({
-          response: {
-            candidates: [{ content: { parts: [{ text: "result" }] } }],
-          },
-        }));
-      }
-      return new Response("not found", { status: 404 });
-    }));
+    const result = await __testExports.waitForMeaningfulStreamingResponse(
+      response,
+      __testExports.createRequestSignal(undefined, 5_000),
+    );
 
-    try {
-      const plugin = await createAntigravityPlugin("google")({
-        client,
-        directory: process.cwd(),
-      });
-      const auth = {
-        type: "oauth" as const,
-        refresh: `${refreshToken}|user-project`,
-        access: "access-token",
-        expires: Date.now() + 3_600_000,
-      };
-      await plugin.auth.loader(async () => auth, {});
+    expect(result.empty).toBe(false);
+    await expect(result.response.text()).resolves.toContain('"text":"continued"');
+  });
 
-      const searchTool = plugin.tool?.google_search as {
-        execute: (
-          args: { query: string; thinking: boolean },
-          context: { abort?: AbortSignal },
-        ) => Promise<string>;
-      };
-      await searchTool.execute(
-        { query: "latest news", thinking: false },
-        {},
-      );
-      await searchTool.execute(
-        { query: "follow-up", thinking: false },
-        {},
-      );
+  it("does not retry blocked streaming responses as empty", async () => {
+    const payload = 'data:{"response":{"promptFeedback":{"blockReason":"SAFETY"}}}\n\n';
+    const response = new Response(payload, {
+      headers: { "Content-Type": "text/event-stream" },
+    });
 
-      expect(searchProjects).toEqual(["managed-project", "managed-project"]);
-      expect(projectResolutionCalls).toBe(1);
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    const result = await __testExports.waitForMeaningfulStreamingResponse(
+      response,
+      __testExports.createRequestSignal(undefined, 5_000),
+    );
+
+    expect(result.empty).toBe(false);
+    await expect(result.response.text()).resolves.toBe(payload);
   });
 });
 
-describe("createAntigravityPlugin provider models", () => {
-  it("returns runtime-shaped discovered models with static fallback", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo) => {
-      const url = String(input);
-      if (url.includes("generativelanguage.googleapis.com/v1beta/models")) {
-        return new Response(JSON.stringify({
-          models: [
-            {
-              name: "models/gemini-driver",
-              displayName: "Gemini Driver",
-              inputTokenLimit: 123,
-              outputTokenLimit: 45,
-              supportedGenerationMethods: ["generateContent"],
-            },
-          ],
-        }));
-      }
-      return new Response("1.2.3");
-    }));
+describe("empty streaming response recovery", () => {
+  it("retries an empty STOP after parallel image tool results", async () => {
+    const directory = join(
+      tmpdir(),
+      `opencode-antigravity-empty-stream-${process.pid}-${Date.now()}`,
+    );
+    mkdirSync(join(directory, ".opencode"), { recursive: true });
+    writeFileSync(
+      join(directory, ".opencode", "antigravity.json"),
+      JSON.stringify({
+        proactive_token_refresh: false,
+        request_jitter_max_ms: 0,
+        empty_response_max_attempts: 2,
+        empty_response_retry_delay_ms: 500,
+      }),
+    );
 
-    try {
-      const plugin = await createAntigravityPlugin("google")({
-        client,
-        directory: process.cwd(),
-      });
-
-      const models = await plugin.provider?.models?.(
-        {
-          id: "google",
-          api: "https://generativelanguage.googleapis.com/v1beta",
-          npm: "@ai-sdk/google",
-          models: {},
-        },
-        { auth: { type: "api", key: "secret" } },
-      );
-
-      expect(models?.["gemini-driver"]).toMatchObject({
-        id: "gemini-driver",
-        providerID: "google",
-        api: {
-          id: "gemini-driver",
-          url: "https://generativelanguage.googleapis.com/v1beta",
-          npm: "@ai-sdk/google",
-        },
-        limit: { context: 123, output: 45 },
-        status: "active",
-      });
-      expect(models?.["gemini-driver"]?.capabilities).toMatchObject({
-        toolcall: true,
-        input: { text: true, image: true, pdf: true },
-        output: { text: true },
-      });
-      expect(models?.["antigravity-gemini-3-pro"]).toMatchObject({
-        id: "antigravity-gemini-3-pro",
-        providerID: "google",
-        api: { id: "antigravity-gemini-3-pro" },
-      });
-      expect(models?.["antigravity-gemini-3.6-flash"]?.capabilities).toMatchObject({
-        temperature: false,
-        reasoning: true,
-      });
-      expect(models?.["antigravity-gemini-3.7-flash"]?.capabilities).toMatchObject({
-        reasoning: true,
-      });
-      expect(models?.["gemini-3.7-flash"]?.capabilities).toMatchObject({
-        reasoning: true,
-      });
-      expect(models?.["gemini-3.5-flash-lite"]?.capabilities).toMatchObject({
-        temperature: false,
-        reasoning: true,
-      });
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it("pulls dynamically discovered models from the Antigravity registry and caches them", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes("fetchAvailableModels")) {
-        return new Response(JSON.stringify({
-          models: {
-            "gemini-3.7-flash": {
-              displayName: "Gemini 3.7 Flash",
-              modelName: "gemini-3.7-flash",
-            },
-            "gemini-3.9-flash": {
-              displayName: "Gemini 3.9 Flash (Registry)",
-              modelName: "gemini-3.9-flash",
-            },
-          },
-        }));
-      }
-      return new Response("1.2.3");
-    }));
-
-    try {
-      const plugin = await createAntigravityPlugin("google")({
-        client,
-        directory: process.cwd(),
-      });
-
-      const models = await plugin.provider?.models?.(
-        {
-          id: "google",
-          api: "https://generativelanguage.googleapis.com/v1beta",
-          npm: "@ai-sdk/google",
-          models: {},
-        },
-        {
-          auth: {
-            type: "oauth",
-            access: "valid-token",
-            refresh: "refresh-token|project=proj-1",
-            expires: Date.now() + 3600_000,
-          },
-        },
-      );
-
-      expect(models?.["antigravity-gemini-3.7-flash"]).toBeDefined();
-      expect(models?.["antigravity-gemini-3.9-flash"]).toMatchObject({
-        id: "antigravity-gemini-3.9-flash",
-        name: "Gemini 3.9 Flash (Registry) (Antigravity)",
-        capabilities: {
-          reasoning: true,
-          toolcall: true,
-        },
-      });
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it("discovers Antigravity models from a disk OAuth account before auth loader initialization", async () => {
+    const now = Date.now();
     vi.mocked(storageModule.loadAccounts).mockResolvedValue({
       version: 4,
       accounts: [{
-        refreshToken: "disk-refresh-token",
-        managedProjectId: "managed-project",
-        addedAt: 1,
-        lastUsed: 1,
+        refreshToken: "stream-refresh",
+        projectId: "stream-project",
+        managedProjectId: "stream-managed-project",
+        addedAt: now,
+        lastUsed: now,
         enabled: true,
       }],
       activeIndex: 0,
     });
+
+    let modelCalls = 0;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes("oauth2.googleapis.com")) {
-        return new Response(JSON.stringify({
-          access_token: "disk-access-token",
-          expires_in: 3600,
-          refresh_token: "rotated-refresh-token",
-        }), { headers: { "content-type": "application/json" } });
-      }
-      if (url.includes("fetchAvailableModels")) {
-        return new Response(JSON.stringify({
-          models: {
-            "gemini-3.9-flash": {
-              displayName: "Gemini 3.9 Flash",
-              modelName: "gemini-3.9-flash",
-            },
-          },
-        }));
-      }
-      if (url.includes("generativelanguage.googleapis.com/v1beta/models")) {
-        return new Response(JSON.stringify({ models: [] }));
+      if (url.includes("v1internal:streamGenerateContent")) {
+        modelCalls += 1;
+        const response = modelCalls === 1
+          ? {
+              response: {
+                candidates: [{
+                  content: { role: "model", parts: [] },
+                  finishReason: "STOP",
+                  index: 0,
+                }],
+                usageMetadata: {
+                  promptTokenCount: 100,
+                  candidatesTokenCount: 0,
+                  totalTokenCount: 100,
+                },
+              },
+            }
+          : {
+              response: {
+                candidates: [{
+                  content: {
+                    role: "model",
+                    parts: [{ text: "continued after images" }],
+                  },
+                  finishReason: "STOP",
+                  index: 0,
+                }],
+              },
+            };
+        return new Response(`data: ${JSON.stringify(response)}\n\n`, {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
       }
       return new Response("1.2.3");
     }));
 
+    let loader: Awaited<ReturnType<typeof requireRequestPipeline>> | undefined;
     try {
-      const plugin = await createAntigravityPlugin("google")({
-        client,
-        directory: process.cwd(),
-      });
-      const models = await plugin.provider?.models?.(
-        {
-          id: "google",
-          api: "https://generativelanguage.googleapis.com/v1beta",
-          npm: "@ai-sdk/google",
-          models: {},
-        },
-        { auth: { type: "api", key: "secret" } },
-      );
-
-      expect(models?.["antigravity-gemini-3.9-flash"]).toBeDefined();
-      expect(storageModule.replaceAccountRefreshToken).toHaveBeenCalledWith(
-        "disk-refresh-token",
-        "rotated-refresh-token",
-      );
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it("persists rotated credentials when discovery receives OpenCode OAuth auth", async () => {
-    const authSet = vi.fn(async () => undefined);
-    const oauthClient = {
-      ...client,
-      auth: { set: authSet },
-    } as unknown as PluginClient;
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes("oauth2.googleapis.com")) {
-        return new Response(JSON.stringify({
-          access_token: "rotated-access-token",
-          expires_in: 3600,
-          refresh_token: "rotated-refresh-token",
-        }), { headers: { "content-type": "application/json" } });
-      }
-      if (url.includes("fetchAvailableModels")) {
-        return new Response(JSON.stringify({ models: {} }));
-      }
-      return new Response("1.2.3");
-    }));
-
-    try {
-      const plugin = await createAntigravityPlugin("google")({
-        client: oauthClient,
-        directory: process.cwd(),
-      });
-      await plugin.provider?.models?.(
-        { id: "google", models: {} },
-        {
-          auth: {
-            type: "oauth",
-            access: "expired-access-token",
-            refresh: "old-refresh-token|project=project-1",
-            expires: 0,
-          },
-        },
-      );
-
-      expect(storageModule.replaceAccountRefreshToken).toHaveBeenCalledWith(
-        "old-refresh-token",
-        "rotated-refresh-token",
-      );
-      expect(authSet).toHaveBeenCalledWith({
-        path: { id: "google" },
-        body: expect.objectContaining({
-          type: "oauth",
-          access: "rotated-access-token",
-          refresh: expect.stringContaining("rotated-refresh-token"),
+      const auth = {
+        type: "oauth" as const,
+        refresh: formatRefreshParts({
+          refreshToken: "stream-refresh",
+          projectId: "stream-project",
+          managedProjectId: "stream-managed-project",
         }),
+        access: "stream-access",
+        expires: now + 3_600_000,
+      };
+      const pipeline = await requireRequestPipeline({
+        directory,
+        getAuth: async () => auth,
       });
+      loader = pipeline;
+
+      const response = await pipeline.fetch(
+        "https://generativelanguage.googleapis.com/v1beta/models/antigravity-gemini-3.1-pro:streamGenerateContent?alt=sse",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            contents: [
+              {
+                role: "model",
+                parts: [
+                  { functionCall: { name: "read", args: { path: "image-a.jpg" } } },
+                  { functionCall: { name: "read", args: { path: "image-b.jpg" } } },
+                ],
+              },
+              {
+                role: "user",
+                parts: [
+                  { functionResponse: { name: "read", response: { output: "attached" } } },
+                  { functionResponse: { name: "read", response: { output: "attached" } } },
+                ],
+              },
+              {
+                role: "user",
+                parts: [
+                  { text: "Attached media from tool result:" },
+                  { inlineData: { mimeType: "image/jpeg", data: "AA==" } },
+                  { inlineData: { mimeType: "image/jpeg", data: "AQ==" } },
+                ],
+              },
+            ],
+          }),
+        },
+      );
+
+      expect(await response.text()).toContain("continued after images");
+      expect(modelCalls).toBe(2);
     } finally {
+      loader?.dispose?.();
       vi.unstubAllGlobals();
+      rmSync(directory, { recursive: true, force: true });
     }
-  });
-
-  it("does not expose API-key auth secret as loader apiKey", async () => {
-    const plugin = await createAntigravityPlugin("google")({
-      client,
-      directory: process.cwd(),
-    });
-
-    const loader = await plugin.auth.loader(
-      async () => ({ type: "api", key: "secret" }),
-      {},
-    );
-
-    expect(loader).toMatchObject({ apiKey: "" });
   });
 });
 
-describe("createAntigravityPlugin auth.loader disk OAuth promotion", () => {
+describe("V2 request pipeline disk OAuth promotion", () => {
   beforeEach(() => {
     vi.mocked(storageModule.loadAccounts).mockReset();
     vi.mocked(storageModule.saveAccountsReplace).mockReset();
@@ -492,23 +322,11 @@ describe("createAntigravityPlugin auth.loader disk OAuth promotion", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     try {
-      const plugin = await createAntigravityPlugin("google")({
-        client,
+      const loader = await requireRequestPipeline({
         directory: process.cwd(),
+        getAuth: async () => ({ type: "api", key: "secret" }),
       });
 
-      const loader = await plugin.auth.loader(
-        async () => ({ type: "api", key: "secret" }),
-        {
-          id: "google",
-          api: "https://generativelanguage.googleapis.com/v1beta",
-          npm: "@ai-sdk/google",
-          models: {},
-        },
-      );
-
-      // Both branches return apiKey: "" — this only confirms loader was constructed.
-      expect(loader).toMatchObject({ apiKey: "" });
       expect(loader).toHaveProperty("fetch");
 
       // Before the fix: this URL took the API-key-only branch and returned a
@@ -555,20 +373,10 @@ describe("createAntigravityPlugin auth.loader disk OAuth promotion", () => {
     }));
 
     try {
-      const plugin = await createAntigravityPlugin("google")({
-        client,
+      const loader = await requireRequestPipeline({
         directory: process.cwd(),
+        getAuth: async () => ({ type: "api", key: "secret" }),
       });
-
-      const loader = await plugin.auth.loader(
-        async () => ({ type: "api", key: "secret" }),
-        {
-          id: "google",
-          api: "https://generativelanguage.googleapis.com/v1beta",
-          npm: "@ai-sdk/google",
-          models: {},
-        },
-      );
 
       const response = await (loader as { fetch: typeof fetch }).fetch(
         "https://generativelanguage.googleapis.com/v1beta/models/antigravity-claude-sonnet-4-6:generateContent",
@@ -635,12 +443,9 @@ describe("createAntigravityPlugin auth.loader disk OAuth promotion", () => {
     }));
 
     try {
-      const plugin = await createAntigravityPlugin("google")({
-        client,
+      const loader = await requireRequestPipeline({
         directory: process.cwd(),
-      });
-      const loader = await plugin.auth.loader(
-        async () => ({
+        getAuth: async () => ({
           type: "oauth",
           refresh: formatRefreshParts({
             refreshToken: "refresh-token",
@@ -650,13 +455,7 @@ describe("createAntigravityPlugin auth.loader disk OAuth promotion", () => {
           access: "access-token",
           expires: now + 60_000,
         }),
-        {
-          id: "google",
-          api: "https://generativelanguage.googleapis.com/v1beta",
-          npm: "@ai-sdk/google",
-          models: {},
-        },
-      );
+      });
 
       const response = await (loader as { fetch: typeof fetch }).fetch(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent",
@@ -711,12 +510,9 @@ describe("createAntigravityPlugin auth.loader disk OAuth promotion", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("unexpected", { status: 500 })));
 
     try {
-      const plugin = await createAntigravityPlugin("google")({
-        client,
+      const loader = await requireRequestPipeline({
         directory: process.cwd(),
-      });
-      const loader = await plugin.auth.loader(
-        async () => ({
+        getAuth: async () => ({
           type: "oauth",
           refresh: formatRefreshParts({
             refreshToken: "refresh-token",
@@ -726,13 +522,7 @@ describe("createAntigravityPlugin auth.loader disk OAuth promotion", () => {
           access: "access-token",
           expires: Date.now() + 60_000,
         }),
-        {
-          id: "google",
-          api: "https://generativelanguage.googleapis.com/v1beta",
-          npm: "@ai-sdk/google",
-          models: {},
-        },
-      );
+      });
 
       await expect(
         (loader as { fetch: typeof fetch }).fetch(
@@ -762,11 +552,9 @@ describe("createAntigravityPlugin auth.loader disk OAuth promotion", () => {
     }
   });
 
-  it("does NOT call client.auth.set when promoted-from-disk OAuth hits invalid_grant", async () => {
-    // Disk holds an OAuth account; OpenCode hands us api-key auth. After my fix,
-    // when the (only) promoted OAuth account fails with invalid_grant, the plugin
-    // must NOT call client.auth.set — OpenCode is in api-key mode for this provider
-    // and clearing OAuth credentials would corrupt that state.
+  it("does not clear the V2 integration when disk-promoted OAuth hits invalid_grant", async () => {
+    // Disk holds an OAuth account while the active V2 integration uses an API key.
+    // Revoking the disk-owned token must not clear that active connection.
     vi.mocked(storageModule.loadAccounts).mockResolvedValue({
       version: 4,
       accounts: [
@@ -798,29 +586,14 @@ describe("createAntigravityPlugin auth.loader disk OAuth promotion", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    // Local client with auth.set as a spy so we can assert it was NOT called.
-    const authSetSpy = vi.fn(async () => undefined);
-    const localClient = {
-      tui: { showToast: vi.fn(async () => undefined) },
-      app: { log: vi.fn(async () => undefined) },
-      auth: { set: authSetSpy },
-    } as unknown as PluginClient;
+    const onAuthCleared = vi.fn(async () => undefined);
 
     try {
-      const plugin = await createAntigravityPlugin("google")({
-        client: localClient,
+      const loader = await requireRequestPipeline({
         directory: process.cwd(),
+        getAuth: async () => ({ type: "api", key: "secret" }),
+        onAuthCleared,
       });
-
-      const loader = await plugin.auth.loader(
-        async () => ({ type: "api", key: "secret" }),
-        {
-          id: "google",
-          api: "https://generativelanguage.googleapis.com/v1beta",
-          npm: "@ai-sdk/google",
-          models: {},
-        },
-      );
 
       // Drive the OAuth fetch handler through the invalid_grant cleanup path.
       // It will throw "All Antigravity accounts have invalid refresh tokens...".
@@ -840,9 +613,7 @@ describe("createAntigravityPlugin auth.loader disk OAuth promotion", () => {
       );
       expect(tokenRefreshCalls.length).toBeGreaterThan(0);
 
-      // CRITICAL: client.auth.set must NOT have been called — doing so would
-      // wipe OpenCode's api-key auth for the google provider.
-      expect(authSetSpy).not.toHaveBeenCalled();
+      expect(onAuthCleared).not.toHaveBeenCalled();
       expect(storageModule.removeAccountFromStorage).toHaveBeenCalledWith("fake-refresh-token");
     } finally {
       vi.unstubAllGlobals();
@@ -855,9 +626,8 @@ describe("createAntigravityPlugin auth.loader disk OAuth promotion", () => {
 // model that the public Gemini API can serve, the plugin must route to the
 // api-key path (agy-sdk) instead of returning the raw 404 to the caller.
 // ---------------------------------------------------------------------------
-import { formatRefreshParts } from "./plugin/auth";
 
-describe("createAntigravityPlugin auth.loader 404→agy-sdk fallback", () => {
+describe("V2 request pipeline 404→agy-sdk fallback", () => {
   // Isolated XDG_CONFIG_HOME so the real user config file is never loaded.
   // Without a config file, schema defaults apply: agy_sdk.enabled=true,
   // agy_sdk.api_key_fallback=true.
@@ -1025,17 +795,10 @@ describe("createAntigravityPlugin auth.loader 404→agy-sdk fallback", () => {
     const fetchMock = buildFetchMock({ hasFallbackKey: true });
     vi.stubGlobal("fetch", fetchMock);
 
-    const plugin = await createAntigravityPlugin("google")({
-      client,
-      directory: process.cwd(),
-    });
-
     const getAuth = buildOAuthGetAuth();
-    const loader = await plugin.auth.loader(getAuth, {
-      id: "google",
-      api: "https://generativelanguage.googleapis.com/v1beta",
-      npm: "@ai-sdk/google",
-      models: {},
+    const loader = await requireRequestPipeline({
+      directory: process.cwd(),
+      getAuth,
     });
 
     // antigravity-gemini-3.5-flash is routable (strips to gemini-3.5-flash which is
@@ -1089,17 +852,10 @@ describe("createAntigravityPlugin auth.loader 404→agy-sdk fallback", () => {
     const fetchMock = buildFetchMock({ hasFallbackKey: false });
     vi.stubGlobal("fetch", fetchMock);
 
-    const plugin = await createAntigravityPlugin("google")({
-      client,
-      directory: process.cwd(),
-    });
-
     const getAuth = buildOAuthGetAuth();
-    const loader = await plugin.auth.loader(getAuth, {
-      id: "google",
-      api: "https://generativelanguage.googleapis.com/v1beta",
-      npm: "@ai-sdk/google",
-      models: {},
+    const loader = await requireRequestPipeline({
+      directory: process.cwd(),
+      getAuth,
     });
 
     const requestUrl =
@@ -1135,17 +891,10 @@ describe("createAntigravityPlugin auth.loader 404→agy-sdk fallback", () => {
     const fetchMock = buildFetchMock({ hasFallbackKey: true, backendStatus: 403 });
     vi.stubGlobal("fetch", fetchMock);
 
-    const plugin = await createAntigravityPlugin("google")({
-      client,
-      directory: process.cwd(),
-    });
-
     const getAuth = buildOAuthGetAuth();
-    const loader = await plugin.auth.loader(getAuth, {
-      id: "google",
-      api: "https://generativelanguage.googleapis.com/v1beta",
-      npm: "@ai-sdk/google",
-      models: {},
+    const loader = await requireRequestPipeline({
+      directory: process.cwd(),
+      getAuth,
     });
 
     const requestUrl =
@@ -1195,17 +944,10 @@ describe("createAntigravityPlugin auth.loader 404→agy-sdk fallback", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const plugin = await createAntigravityPlugin("google")({
-      client,
-      directory: process.cwd(),
-    });
-
     const getAuth = buildOAuthGetAuth();
-    const loader = await plugin.auth.loader(getAuth, {
-      id: "google",
-      api: "https://generativelanguage.googleapis.com/v1beta",
-      npm: "@ai-sdk/google",
-      models: {},
+    const loader = await requireRequestPipeline({
+      directory: process.cwd(),
+      getAuth,
     });
 
     const requestUrl =
@@ -1232,7 +974,7 @@ describe("createAntigravityPlugin auth.loader 404→agy-sdk fallback", () => {
   });
 });
 
-describe("createAntigravityPlugin capacity-exhaustion header-style fallback (review fix 1)", () => {
+describe("V2 request pipeline capacity-exhaustion fallback", () => {
   let tmpConfigHome: string;
   const savedEnv: Record<string, string | undefined> = {};
 
@@ -1354,12 +1096,9 @@ describe("createAntigravityPlugin capacity-exhaustion header-style fallback (rev
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const plugin = await createAntigravityPlugin("google")({
-      client,
+    const loader = await requireRequestPipeline({
       directory: process.cwd(),
-    });
-    const loader = await plugin.auth.loader(
-      async () => ({
+      getAuth: async () => ({
         type: "oauth" as const,
         refresh: formatRefreshParts({
           refreshToken: "refresh-token",
@@ -1369,8 +1108,7 @@ describe("createAntigravityPlugin capacity-exhaustion header-style fallback (rev
         access: "access-token",
         expires: now + 3_600_000,
       }),
-      { id: "google", api: "https://generativelanguage.googleapis.com/v1beta", npm: "@ai-sdk/google", models: {} },
-    );
+    });
 
     // Fake timers so the capacity exponential backoffs (1s→2s→4s per endpoint)
     // don't make the test take ~20s of real time.
@@ -1455,16 +1193,15 @@ describe("createAntigravityPlugin capacity-exhaustion header-style fallback (rev
       });
 
     try {
-      const plugin = await createAntigravityPlugin("google")({ client, directory: process.cwd() });
-      const loader = await plugin.auth.loader(
-        async () => ({
+      const loader = await requireRequestPipeline({
+        directory: process.cwd(),
+        getAuth: async () => ({
           type: "oauth" as const,
           refresh: formatRefreshParts({ refreshToken: "refresh-A", projectId: "proj", managedProjectId: "managed" }),
           access: "access-token",
           expires: now + 3_600_000,
         }),
-        { id: "google", api: "https://generativelanguage.googleapis.com/v1beta", npm: "@ai-sdk/google", models: {} },
-      );
+      });
 
       vi.useFakeTimers();
       const fetchPromise = (loader as { fetch: typeof fetch }).fetch(

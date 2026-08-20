@@ -34,17 +34,6 @@ type CreateSoftQuotaBlockedResponse = (input: {
   requestedModel?: string;
 }) => Response;
 
-type VerifyAccountAccess = (
-  account: {
-    refreshToken: string;
-    email?: string;
-    projectId?: string;
-    managedProjectId?: string;
-  },
-  client: unknown,
-  providerId: string,
-) => Promise<{ status: string; message: string; verifyUrl?: string }>;
-
 type TryFetchWithAgySdkCredentials = (
   input: RequestInfo,
   init: RequestInit | undefined,
@@ -57,13 +46,8 @@ let getHeaderStyleFromUrl: GetHeaderStyleFromUrl | undefined;
 let resolveHeaderRoutingDecision: ResolveHeaderRoutingDecision | undefined;
 let createSoftQuotaBlockedResponse: CreateSoftQuotaBlockedResponse | undefined;
 let tryFetchWithAgySdkCredentials: TryFetchWithAgySdkCredentials | undefined;
-let verifyAccountAccess: VerifyAccountAccess | undefined;
 
 beforeAll(async () => {
-  vi.mock("@opencode-ai/plugin", () => ({
-    tool: vi.fn(),
-  }));
-
   const { __testExports } = await import("../plugin");
   resolveQuotaFallbackHeaderStyle = (__testExports as {
     resolveQuotaFallbackHeaderStyle?: ResolveQuotaFallbackHeaderStyle;
@@ -80,9 +64,6 @@ beforeAll(async () => {
   tryFetchWithAgySdkCredentials = (__testExports as {
     tryFetchWithAgySdkCredentials?: TryFetchWithAgySdkCredentials;
   }).tryFetchWithAgySdkCredentials;
-  verifyAccountAccess = (__testExports as {
-    verifyAccountAccess?: VerifyAccountAccess;
-  }).verifyAccountAccess;
 });
 
 describe("API-key fallback credentials", () => {
@@ -360,56 +341,5 @@ describe("quota blocked responses", () => {
     expect(body).toContain("finishReason");
     expect(body).not.toContain("content_block_delta");
     expect(body).not.toContain("message_start");
-  });
-});
-
-describe("account verification probe", () => {
-  it("does not send x-goog-user-project when probing Antigravity access", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      const url = input.toString();
-      if (url === "https://oauth2.googleapis.com/token") {
-        return new Response(JSON.stringify({ access_token: "access-token", expires_in: 3600 }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      }
-      return new Response("", { status: 200 });
-    });
-
-    const client = {
-      auth: {
-        get: vi.fn().mockResolvedValue({
-          data: {
-            type: "oauth",
-            refresh: "refresh-token|user-project|managed-project",
-            access: "access-token",
-            expires: Date.now() + 3_600_000,
-          },
-        }),
-      },
-    };
-
-    try {
-      const result = await verifyAccountAccess?.(
-        {
-          refreshToken: "refresh-token",
-          projectId: "user-project",
-          managedProjectId: "managed-project",
-        },
-        client,
-        "google",
-      );
-
-      expect(result?.status).toBe("ok");
-      const [url, init] = fetchMock.mock.calls[1]!;
-      expect(url.toString()).toContain("daily-cloudcode-pa.sandbox.googleapis.com");
-      const headers = new Headers(init?.headers);
-      expect(headers.get("x-goog-user-project")).toBeNull();
-      expect(JSON.parse(String(init?.body))).toMatchObject({
-        project: "managed-project",
-      });
-    } finally {
-      fetchMock.mockRestore();
-    }
   });
 });

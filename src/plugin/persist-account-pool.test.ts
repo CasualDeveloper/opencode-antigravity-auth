@@ -12,6 +12,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { promises as fs } from "node:fs";
 import * as storageModule from "./storage";
 import type { AccountStorageV4, AccountMetadataV3 } from "./storage";
+import { persistAccountPool } from "./persist-account-pool";
 
 vi.mock("proper-lockfile", () => ({
   default: {
@@ -248,6 +249,33 @@ describe("persistAccountPool behavior (Issue #89)", () => {
     it.todo("preserves activeIndex when adding new accounts");
     
     it.todo("updates lastUsed timestamp for existing accounts");
+
+    it("preserves independent family cursors when a refresh token rotates", async () => {
+      const stored = createMockStorage([
+        createMockAccount({ email: "first@example.com", refreshToken: "token-1" }),
+        createMockAccount({ email: "second@example.com", refreshToken: "token-2" }),
+        createMockAccount({ email: "third@example.com", refreshToken: "token-3" }),
+      ], 0);
+      stored.activeIndexByFamily = { claude: 2, gemini: 1 };
+      let persistedContent = JSON.stringify(stored);
+      vi.mocked(fs.readFile).mockImplementation(async () => persistedContent);
+      vi.mocked(fs.writeFile).mockImplementation(async (_path, content) => {
+        persistedContent = String(content);
+      });
+
+      await persistAccountPool([{
+        type: "success",
+        refresh: "rotated-token-2|test-project-id",
+        access: "new-access",
+        expires: Date.now() + 3600_000,
+        email: "second@example.com",
+        projectId: "test-project-id",
+      }]);
+
+      const persisted = JSON.parse(persistedContent) as AccountStorageV4;
+      expect(persisted.activeIndexByFamily).toEqual({ claude: 2, gemini: 1 });
+      expect(persisted.accounts[1]?.refreshToken).toBe("rotated-token-2");
+    });
   });
 
   describe("fresh start behavior (replaceAll=true)", () => {
