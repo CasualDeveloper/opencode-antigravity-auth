@@ -3,7 +3,8 @@ import { formatRefreshParts, parseRefreshParts, calculateTokenExpiry } from "./a
 import { clearCachedAuth, storeCachedAuth } from "./cache";
 import { createLogger } from "./logger";
 import { invalidateProjectContextCache } from "./project";
-import type { OAuthAuthDetails, PluginClient, RefreshParts } from "./types";
+import type { OAuthAuthDetails, RefreshParts } from "./types";
+import { replaceAccountRefreshToken } from "./storage";
 
 const log = createLogger("token");
 
@@ -80,12 +81,10 @@ export class AntigravityTokenRefreshError extends Error {
 }
 
 /**
- * Refreshes an Antigravity OAuth access token, updates persisted credentials, and handles revocation.
+ * Refreshes an Antigravity OAuth access token and handles revocation.
  */
 export async function refreshAccessToken(
   auth: OAuthAuthDetails,
-  client: PluginClient,
-  providerId: string,
 ): Promise<OAuthAuthDetails | undefined> {
   const parts = parseRefreshParts(auth.refresh);
   if (!parts.refreshToken) {
@@ -155,6 +154,9 @@ export async function refreshAccessToken(
       refresh: formatRefreshParts(refreshedParts),
     };
 
+    if (refreshedParts.refreshToken !== parts.refreshToken) {
+      await replaceAccountRefreshToken(parts.refreshToken, refreshedParts.refreshToken);
+    }
     storeCachedAuth(updatedAuth);
     invalidateProjectContextCache(auth.refresh);
 
@@ -167,4 +169,3 @@ export async function refreshAccessToken(
     return undefined;
   }
 }
-

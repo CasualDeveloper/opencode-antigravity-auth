@@ -1,3 +1,15 @@
+import { Integration, Model, Provider, type Plugin } from "@opencode/plugin"
+import { loadConfig } from "./config"
+import { accessTokenExpired, isOAuthAuth, parseRefreshParts, resolveAuth } from "./auth"
+import { oauthAuthFromDisk, reconcileOAuthAuth } from "./oauth-auth-from-disk"
+import { refreshAccessToken } from "./token"
+import { fetchAvailableModels } from "./quota"
+import { ANTIGRAVITY_DEFAULT_PROJECT_ID } from "../constants"
+import { debugLogToFile } from "./debug"
+import { createLogger } from "./logger"
+import { modelsFromAntigravityInventory, type OpencodeModelDefinition, type OpencodeModelDefinitions } from "./config/models"
+import type { AntigravityConfig } from "./config"
+import type { AuthDetails } from "./types"
 /**
  * Live cache of the public Gemini API model catalog (`GET
  * generativelanguage.googleapis.com/v1beta/models`) and the Antigravity model
@@ -8,9 +20,11 @@
  * new and updated models directly from Google's registries without requiring manual
  * plugin updates.
  */
-import type { AntigravityAvailableModels, GeminiApiModel } from "./config/models";
+import type { AntigravityModelInventory, GeminiApiModel } from "./config/models";
 
 const CATALOG_TTL_MS = 60 * 60 * 1000;
+/** How often a running plugin rediscovers the backend inventory. */
+export const DISCOVERY_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
 
 interface PublicModelCatalog {
   ids: ReadonlySet<string>;
@@ -18,7 +32,7 @@ interface PublicModelCatalog {
 }
 
 interface AntigravityModelCatalog {
-  models: AntigravityAvailableModels;
+  inventory: AntigravityModelInventory;
   fetchedAt: number;
 }
 
@@ -56,13 +70,13 @@ export function getPublicGeminiApiModelIds(): ReadonlySet<string> | undefined {
 }
 
 /**
- * Records available models from the Antigravity model registry (`fetchAvailableModels`).
+ * Records the Antigravity model registry response (`fetchAvailableModels`),
+ * including the role lists that classify its models.
  * Called as a side effect of quota checks and model discovery.
  */
-export function recordAntigravityAvailableModels(models: AntigravityAvailableModels): void {
-  if (!models || Object.keys(models).length === 0) return;
+export function recordAntigravityAvailableModels(inventory: AntigravityModelInventory): void {
   antigravityCatalog = {
-    models: { ...models },
+    inventory: { ...inventory },
     fetchedAt: Date.now(),
   };
 }
@@ -71,10 +85,10 @@ export function recordAntigravityAvailableModels(models: AntigravityAvailableMod
  * Returns the cached Antigravity available models, or `undefined` when no catalog
  * has been fetched yet or the cached one is stale.
  */
-export function getCachedAntigravityAvailableModels(): AntigravityAvailableModels | undefined {
+export function getCachedAntigravityAvailableModels(): AntigravityModelInventory | undefined {
   if (!antigravityCatalog) return undefined;
   if (Date.now() - antigravityCatalog.fetchedAt > CATALOG_TTL_MS) return undefined;
-  return antigravityCatalog.models;
+  return antigravityCatalog.inventory;
 }
 
 export function resetPublicGeminiApiModelCatalogForTests(): void {
@@ -88,4 +102,146 @@ export function resetAntigravityModelCatalogForTests(): void {
 export function resetModelCatalogsForTests(): void {
   catalog = undefined;
   antigravityCatalog = undefined;
+}
+
+const log = createLogger("model-catalog")
+export async function discoverAntigravityModels(
+  config: AntigravityConfig,
+  auth: AuthDetails | undefined,
+): Promise<OpencodeModelDefinitions | undefined> {
+  if (!config.model_discovery.enabled || !config.model_discovery.antigravity) return {};
+
+  let effectiveAuth = auth && isOAuthAuth(auth) ? auth : undefined;
+  if (!effectiveAuth) {
+    effectiveAuth = await oauthAuthFromDisk();
+  }
+  if (effectiveAuth) effectiveAuth = await reconcileOAuthAuth(effectiveAuth) ?? await oauthAuthFromDisk();
+
+  if (!effectiveAuth) {
+    const cached = getCachedAntigravityAvailableModels();
+    if (cached) {
+      return modelsFromAntigravityInventory(cached);
+    }
+    return undefined;
+  }
+
+  let accessToken = effectiveAuth.access;
+  if (!accessToken || accessTokenExpired(effectiveAuth)) {
+    const refreshed = await refreshAccessToken(effectiveAuth);
+    if (refreshed) {
+      effectiveAuth = refreshed;
+      accessToken = refreshed.access;
+    }
+  }
+  if (!accessToken) {
+    const cached = getCachedAntigravityAvailableModels();
+    if (cached) {
+      return modelsFromAntigravityInventory(cached);
+    }
+    return undefined;
+  }
+
+  const parts = parseRefreshParts(effectiveAuth.refresh);
+  const projectId = parts.managedProjectId || parts.projectId || ANTIGRAVITY_DEFAULT_PROJECT_ID;
+  try {
+    const response = await fetchAvailableModels(accessToken, projectId);
+    if (!response.models) throw new Error("Antigravity discovery returned no model inventory");
+    recordAntigravityAvailableModels(response);
+    return modelsFromAntigravityInventory(response);
+  } catch (error) {
+    log.debug("fetchAvailableModels-failed", { error: String(error) });
+    const cached = getCachedAntigravityAvailableModels();
+    if (cached) {
+      return modelsFromAntigravityInventory(cached);
+    }
+    return undefined;
+  }
+}
+
+
+export const ANTIGRAVITY_PROVIDER_PACKAGE = `aisdk:${new URL("../google-provider.js", import.meta.url).href}`
+
+export function toCatalogModel(
+  modelID: string,
+  definition: OpencodeModelDefinition,
+): Model.Info {
+  return {
+    ...Model.Info.default(Provider.ID.google, Model.ID.make(modelID)),
+    modelID: Model.ID.make(`antigravity-${definition.backendModelID}`),
+    name: definition.name,
+    package: ANTIGRAVITY_PROVIDER_PACKAGE,
+    capabilities: {
+      tools: definition.tools,
+      input: [...definition.modalities.input],
+      output: [...definition.modalities.output],
+    },
+    variants: Object.entries(definition.variants ?? {}).map(([id, variant]) => ({
+      id: Model.VariantID.make(id),
+      settings: { antigravityModelID: variant.backendModelID },
+    })),
+    time: { released: 0 },
+    cost: [],
+    status: "active",
+    enabled: true,
+    limit: { ...definition.limit },
+  }
+}
+
+export async function registerDynamicCatalog(
+  context: Pick<Plugin.Context, "provider" | "model" | "integration" | "location">,
+): Promise<() => Promise<void>> {
+  let discovered: OpencodeModelDefinitions = {}
+
+  await context.provider.transform((editor) => {
+    const models = Object.entries(discovered).map(([id, definition]) => toCatalogModel(id, definition))
+    if (models.length === 0) return
+    const existing = editor.get("google")
+    if (!existing) {
+      editor.add({
+        info: {
+          ...Provider.Info.empty(Provider.ID.google),
+          name: "Google",
+          integrationID: Integration.ID.make("google"),
+          package: ANTIGRAVITY_PROVIDER_PACKAGE,
+          activation: "enabled",
+        },
+        models,
+      })
+      return
+    }
+    // Discovered disk-backed accounts are usable without a host credential.
+    // Keep unrelated Google source definitions and their original drivers.
+    editor.update("google", (provider) => { provider.activation = "enabled" })
+    editor.models.set("google", [
+      ...[...existing.models.values()].filter((model) => !model.id.startsWith("antigravity-")),
+      ...models,
+    ])
+  })
+
+  await context.model.transform((model) => {
+    for (const entry of model.list("google")) {
+      const id = String(entry.id)
+      if (id.startsWith("antigravity-") && !Object.hasOwn(discovered, id)) {
+        model.remove("google", id)
+      }
+    }
+    for (const [modelID, definition] of Object.entries(discovered)) {
+      model.update("google", modelID, (draft) => {
+        Object.assign(draft, toCatalogModel(modelID, definition))
+      })
+    }
+  })
+
+  return async () => {
+    try {
+      const config = loadConfig(context.location.directory)
+      const auth = await resolveAuth(context)
+      const next = await discoverAntigravityModels(config, auth)
+      if (next === undefined || JSON.stringify(next) === JSON.stringify(discovered)) return
+      discovered = next
+      await context.provider.reload()
+    } catch (error) {
+      debugLogToFile(`[V2 Discovery] Keeping last discovered inventory: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
 }

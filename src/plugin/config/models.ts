@@ -1,14 +1,5 @@
-import type { ProviderModel } from "../types";
-
-export type ModelThinkingLevel = "minimal" | "low" | "medium" | "high";
-
-export interface ModelThinkingConfig {
-  thinkingBudget: number;
-}
-
 export interface ModelVariant {
-  thinkingLevel?: ModelThinkingLevel;
-  thinkingConfig?: ModelThinkingConfig;
+  backendModelID: string;
 }
 
 export interface ModelLimit {
@@ -16,16 +7,17 @@ export interface ModelLimit {
   output: number;
 }
 
-export type ModelModality = "text" | "image" | "pdf";
+export type ModelModality = "text" | "image" | "pdf" | "audio" | "video";
 
 export interface ModelModalities {
   input: ModelModality[];
   output: ModelModality[];
 }
 
-export interface OpencodeModelDefinition extends ProviderModel {
+export interface OpencodeModelDefinition {
+  backendModelID: string;
   name: string;
-  temperature?: boolean;
+  tools: boolean;
   limit: ModelLimit;
   modalities: ModelModalities;
   variants?: Record<string, ModelVariant>;
@@ -44,173 +36,38 @@ export interface GeminiApiModel {
 
 export interface AntigravityAvailableModel {
   displayName?: string;
-  modelName?: string;
+  isInternal?: boolean;
+  maxTokens?: number;
+  maxOutputTokens?: number;
+  supportsImages?: boolean;
+  supportsVideo?: boolean;
+  supportedMimeTypes?: Record<string, boolean>;
+  tagTitle?: string;
+  tagDescription?: string;
 }
 
 export type AntigravityAvailableModels = Record<string, AntigravityAvailableModel>;
 
-const DEFAULT_MODALITIES: ModelModalities = {
-  input: ["text", "image", "pdf"],
-  output: ["text"],
-};
-
-export const OPENCODE_MODEL_DEFINITIONS: OpencodeModelDefinitions = {
-  "antigravity-gemini-3-pro": {
-    name: "Gemini 3 Pro (Antigravity)",
-    limit: { context: 1048576, output: 65535 },
-    modalities: DEFAULT_MODALITIES,
-    variants: {
-      low: { thinkingLevel: "low" },
-      high: { thinkingLevel: "high" },
-    },
-  },
-  "antigravity-gemini-3.1-pro": {
-    name: "Gemini 3.1 Pro (Antigravity)",
-    limit: { context: 1048576, output: 65535 },
-    modalities: DEFAULT_MODALITIES,
-    variants: {
-      low: { thinkingLevel: "low" },
-      high: { thinkingLevel: "high" },
-    },
-  },
-  "antigravity-gemini-3-flash": {
-    name: "Gemini 3 Flash (Antigravity)",
-    limit: { context: 1048576, output: 65536 },
-    modalities: DEFAULT_MODALITIES,
-    variants: {
-      minimal: { thinkingLevel: "minimal" },
-      low: { thinkingLevel: "low" },
-      medium: { thinkingLevel: "medium" },
-      high: { thinkingLevel: "high" },
-    },
-  },
-  "antigravity-gemini-3.5-flash": {
-    name: "Gemini 3.5 Flash (Antigravity)",
-    limit: { context: 1048576, output: 65536 },
-    modalities: DEFAULT_MODALITIES,
-    variants: {
-      minimal: { thinkingLevel: "minimal" },
-      low: { thinkingLevel: "low" },
-      medium: { thinkingLevel: "medium" },
-      high: { thinkingLevel: "high" },
-    },
-  },
-  "antigravity-gemini-3.6-flash": {
-    name: "Gemini 3.6 Flash (Antigravity)",
-    temperature: false,
-    limit: { context: 1048576, output: 65536 },
-    modalities: DEFAULT_MODALITIES,
-    variants: {
-      low: { thinkingLevel: "low" },
-      medium: { thinkingLevel: "medium" },
-      high: { thinkingLevel: "high" },
-    },
-  },
-  "antigravity-gemini-3.7-flash": {
-    name: "Gemini 3.7 Flash (Antigravity)",
-    limit: { context: 1048576, output: 65536 },
-    modalities: DEFAULT_MODALITIES,
-    variants: {
-      minimal: { thinkingLevel: "minimal" },
-      low: { thinkingLevel: "low" },
-      medium: { thinkingLevel: "medium" },
-      high: { thinkingLevel: "high" },
-    },
-  },
-  "antigravity-claude-sonnet-4-6": {
-    name: "Claude Sonnet 4.6 (Antigravity)",
-    limit: { context: 200000, output: 64000 },
-    modalities: DEFAULT_MODALITIES,
-  },
-  "antigravity-claude-opus-4-6-thinking": {
-    name: "Claude Opus 4.6 Thinking (Antigravity)",
-    limit: { context: 200000, output: 64000 },
-    modalities: DEFAULT_MODALITIES,
-    variants: {
-      low: { thinkingConfig: { thinkingBudget: 8192 } },
-      max: { thinkingConfig: { thinkingBudget: 32768 } },
-    },
-  },
-  "gemini-2.5-flash": {
-    name: "Gemini 2.5 Flash (Gemini CLI)",
-    limit: { context: 1048576, output: 65536 },
-    modalities: DEFAULT_MODALITIES,
-  },
-  "gemini-2.5-pro": {
-    name: "Gemini 2.5 Pro (Gemini CLI)",
-    limit: { context: 1048576, output: 65536 },
-    modalities: DEFAULT_MODALITIES,
-  },
-  "gemini-3-flash-preview": {
-    name: "Gemini 3 Flash Preview (Gemini CLI)",
-    limit: { context: 1048576, output: 65536 },
-    modalities: DEFAULT_MODALITIES,
-  },
-  "gemini-3.5-flash": {
-    name: "Gemini 3.5 Flash (Gemini CLI)",
-    limit: { context: 1048576, output: 65536 },
-    modalities: DEFAULT_MODALITIES,
-  },
-  "gemini-3.5-flash-lite": {
-    name: "Gemini 3.5 Flash-Lite (Gemini CLI)",
-    temperature: false,
-    limit: { context: 1048576, output: 65536 },
-    modalities: DEFAULT_MODALITIES,
-    variants: {
-      minimal: { thinkingLevel: "minimal" },
-      low: { thinkingLevel: "low" },
-      medium: { thinkingLevel: "medium" },
-      high: { thinkingLevel: "high" },
-    },
-  },
-  "gemini-3.6-flash": {
-    name: "Gemini 3.6 Flash (Gemini CLI)",
-    temperature: false,
-    limit: { context: 1048576, output: 65536 },
-    modalities: DEFAULT_MODALITIES,
-    variants: {
-      medium: { thinkingLevel: "medium" },
-      high: { thinkingLevel: "high" },
-    },
-  },
-  "gemini-3.7-flash": {
-    name: "Gemini 3.7 Flash (Gemini CLI)",
-    limit: { context: 1048576, output: 65536 },
-    modalities: DEFAULT_MODALITIES,
-    variants: {
-      minimal: { thinkingLevel: "minimal" },
-      low: { thinkingLevel: "low" },
-      medium: { thinkingLevel: "medium" },
-      high: { thinkingLevel: "high" },
-    },
-  },
-  "gemini-3-pro-preview": {
-    name: "Gemini 3 Pro Preview (Gemini CLI)",
-    limit: { context: 1048576, output: 65535 },
-    modalities: DEFAULT_MODALITIES,
-  },
-  "gemini-3.1-pro": {
-    name: "Gemini 3.1 Pro (Gemini CLI)",
-    limit: { context: 1048576, output: 65535 },
-    modalities: DEFAULT_MODALITIES,
-  },
-  "gemini-3.1-pro-preview-customtools": {
-    name: "Gemini 3.1 Pro Preview Custom Tools (Gemini CLI)",
-    limit: { context: 1048576, output: 65535 },
-    modalities: DEFAULT_MODALITIES,
-  },
-};
-
-function modelIdFromGeminiName(name: string | undefined): string | null {
-  if (!name) return null;
-  const id = name.replace(/^models\//, "").trim();
-  return id || null;
+/** The `fetchAvailableModels` response; its role lists classify the model entries. */
+export interface AntigravityModelInventory {
+  models?: AntigravityAvailableModels;
+  agentModelSorts?: Array<{ groups?: Array<{ modelIds?: string[] }> }>;
+  tieredModelIds?: Record<string, string[]>;
+  deprecatedModelIds?: Record<string, { newModelId?: string }>;
+  tabModelIds?: string[];
+  imageGenerationModelIds?: string[];
+  commandModelIds?: string[];
+  mqueryModelIds?: string[];
+  webSearchModelIds?: string[];
+  commitMessageModelIds?: string[];
 }
 
-function supportsGeminiGeneration(model: GeminiApiModel): boolean {
-  const methods = model.supportedGenerationMethods ?? [];
-  return methods.includes("generateContent") || methods.includes("streamGenerateContent");
-}
+// Matches OpenCode's Model.Info default when the backend omits token limits.
+const DEFAULT_LIMIT: ModelLimit = { context: 200_000, output: 32_000 };
+const TIERS = ["minimal", "extra-low", "low", "medium", "high", "max"] as const;
+type Tier = typeof TIERS[number];
+const TIER_SUFFIX = /\s+\((minimal|extra[ -]low|low|medium|high|max)\)$/i;
+const TIER_ID_SUFFIX = /-(?:extra-low|minimal|low|medium|high|max|tiered)$/i;
 
 function titleFromModelId(modelId: string): string {
   return modelId
@@ -220,109 +77,110 @@ function titleFromModelId(modelId: string): string {
     .join(" ");
 }
 
-function defaultLimitForModel(modelId: string): ModelLimit {
-  if (modelId.includes("claude")) {
-    return { context: 200000, output: 64000 };
-  }
-  return { context: 1048576, output: 65536 };
+function comparable(value: string): string {
+  return value.replace(/[^a-z0-9]/gi, "").toLowerCase();
 }
 
-function defaultVariantsForModel(modelId: string): Record<string, ModelVariant> | undefined {
-  const normalized = modelId.toLowerCase().replace(/^antigravity-/, "");
-  if (normalized.includes("claude") && normalized.includes("thinking")) {
-    return {
-      low: { thinkingConfig: { thinkingBudget: 8192 } },
-      max: { thinkingConfig: { thinkingBudget: 32768 } },
-    };
-  }
-  if (normalized.startsWith("gemini-3") || normalized.startsWith("gemini-2.5")) {
-    if (normalized.includes("pro")) {
-      return {
-        low: { thinkingLevel: "low" },
-        high: { thinkingLevel: "high" },
-      };
-    }
-    if (normalized.includes("flash")) {
-      return {
-        minimal: { thinkingLevel: "minimal" },
-        low: { thinkingLevel: "low" },
-        medium: { thinkingLevel: "medium" },
-        high: { thinkingLevel: "high" },
-      };
-    }
-  }
-  return undefined;
+function modalities(
+  id: string,
+  entry: AntigravityAvailableModel,
+  inventory: AntigravityModelInventory,
+): ModelModalities {
+  const mimeTypes = Object.entries(entry.supportedMimeTypes ?? {})
+    .filter(([, supported]) => supported)
+    .map(([type]) => type);
+  const input: ModelModality[] = ["text"];
+  if (entry.supportsImages || mimeTypes.some((type) => type.startsWith("image/"))) input.push("image");
+  if (mimeTypes.includes("application/pdf")) input.push("pdf");
+  if (mimeTypes.some((type) => type.startsWith("audio/"))) input.push("audio");
+  // `video/*` frame MIME types appear on models without video support.
+  if (entry.supportsVideo) input.push("video");
+  const output: ModelModality[] = inventory.imageGenerationModelIds?.includes(id)
+    ? ["text", "image"]
+    : ["text"];
+  return { input, output };
 }
 
-function mergeWithStaticDefinition(
-  modelId: string,
-  discovered: OpencodeModelDefinition,
-): OpencodeModelDefinition {
-  const existing = OPENCODE_MODEL_DEFINITIONS[modelId];
-  if (!existing) return discovered;
-
-  return {
-    ...existing,
-    ...discovered,
-    limit: discovered.limit ?? existing.limit,
-    modalities: discovered.modalities ?? existing.modalities,
-    variants: existing.variants ?? discovered.variants,
-  };
-}
-
-function antigravityModelIdFromEntry(sourceId: string, entry: AntigravityAvailableModel): string | null {
-  const rawId = (entry.modelName || sourceId).trim();
-  if (!rawId) return null;
-  const modelId = rawId.replace(/^models\//, "");
-  return modelId.startsWith("antigravity-") ? modelId : `antigravity-${modelId}`;
-}
-
-export function modelsFromGeminiApi(models: GeminiApiModel[]): OpencodeModelDefinitions {
-  const definitions: OpencodeModelDefinitions = {};
-
-  for (const model of models) {
-    if (!supportsGeminiGeneration(model)) continue;
-    const modelId = modelIdFromGeminiName(model.name) || model.baseModelId;
-    if (!modelId) continue;
-
-    const variants = defaultVariantsForModel(modelId);
-    const discovered: OpencodeModelDefinition = {
-      name: model.displayName ? `${model.displayName} (Gemini API)` : `${titleFromModelId(modelId)} (Gemini API)`,
-      limit: {
-        context: model.inputTokenLimit ?? defaultLimitForModel(modelId).context,
-        output: model.outputTokenLimit ?? defaultLimitForModel(modelId).output,
-      },
-      modalities: DEFAULT_MODALITIES,
-      ...(variants ? { variants } : {}),
-    };
-    definitions[modelId] = mergeWithStaticDefinition(modelId, discovered);
-  }
-
-  return definitions;
-}
-
-export function modelsFromAntigravityAvailableModels(
-  models: AntigravityAvailableModels,
+/**
+ * Converts the backend inventory into OpenCode models. Availability, names,
+ * limits, modalities, aliases, and tiers come only from the response.
+ */
+export function modelsFromAntigravityInventory(
+  inventory: AntigravityModelInventory,
 ): OpencodeModelDefinitions {
-  const definitions: OpencodeModelDefinitions = {};
+  const models = inventory.models ?? {};
+  const roles = new Set([
+    ...(inventory.agentModelSorts ?? []).flatMap((sort) => sort.groups ?? []).flatMap((group) => group.modelIds ?? []),
+    ...Object.values(inventory.tieredModelIds ?? {}).flat(),
+    ...(inventory.commandModelIds ?? []),
+    ...(inventory.imageGenerationModelIds ?? []),
+    ...(inventory.mqueryModelIds ?? []),
+    ...(inventory.webSearchModelIds ?? []),
+    ...(inventory.commitMessageModelIds ?? []),
+  ]);
+  const tabModels = new Set(inventory.tabModelIds ?? []);
+  const isReplaced = (id: string) => {
+    const next = inventory.deprecatedModelIds?.[id]?.newModelId;
+    return next !== undefined && next !== id && next in models;
+  };
+  // An untitled tag naming another advertised model marks this entry as its alias.
+  const isAlias = (id: string, entry: AntigravityAvailableModel) => {
+    const target = entry.tagDescription?.trim();
+    return !entry.tagTitle && !!target && target !== id && target in models;
+  };
 
-  for (const [sourceId, entry] of Object.entries(models)) {
-    const modelId = antigravityModelIdFromEntry(sourceId, entry);
-    if (!modelId) continue;
-
-    const variants = defaultVariantsForModel(modelId);
-    const discovered: OpencodeModelDefinition = {
-      name: entry.displayName ? `${entry.displayName} (Antigravity)` : `${titleFromModelId(modelId)} (Antigravity)`,
-      limit: defaultLimitForModel(modelId),
-      modalities: DEFAULT_MODALITIES,
-      ...(variants ? { variants } : {}),
-    };
-    definitions[modelId] = mergeWithStaticDefinition(modelId, discovered);
+  const byName = new Map<string, { id: string; entry: AntigravityAvailableModel; label: string }>();
+  for (const [id, entry] of Object.entries(models).sort(([a], [b]) => a.localeCompare(b))) {
+    if (entry.isInternal || tabModels.has(id) || isReplaced(id) || isAlias(id, entry)) continue;
+    const displayName = entry.displayName?.trim();
+    // Untitled entries are user-facing only when a backend role list names them.
+    if (!displayName && !roles.has(id)) continue;
+    const label = displayName || titleFromModelId(id.replace(/-tiered$/i, ""));
+    const key = label.toLowerCase().replace(/\s+/g, " ");
+    const existing = byName.get(key);
+    // Keep one entry per display name, preferring an ID the backend assigns a role.
+    if (existing && (roles.has(existing.id) || !roles.has(id))) continue;
+    byName.set(key, { id, entry, label });
   }
 
-  return definitions;
-}
+  const groups = new Map<string, Array<{ id: string; entry: AntigravityAvailableModel; name: string; tier?: Tier }>>();
+  for (const { id, entry, label } of byName.values()) {
+    const match = label.match(TIER_SUFFIX);
+    const tier = match?.[1]?.toLowerCase().replace(" ", "-") as Tier | undefined;
+    const name = match ? label.slice(0, match.index).trim() : label;
+    const key = name.toLowerCase();
+    groups.set(key, [...(groups.get(key) ?? []), { id, entry, name, tier }]);
+  }
 
-export function mergeModelDefinitions(...definitions: Record<string, ProviderModel>[]): Record<string, ProviderModel> {
-  return Object.assign({}, ...definitions);
+  const definitions: OpencodeModelDefinitions = {};
+  for (const group of groups.values()) {
+    // An untiered entry is the default route; otherwise the lowest tier is.
+    group.sort((a, b) =>
+      (a.tier ? TIERS.indexOf(a.tier) + 1 : 0) - (b.tier ? TIERS.indexOf(b.tier) + 1 : 0)
+      || a.id.localeCompare(b.id),
+    );
+    const preferred = group[0];
+    if (!preferred) continue;
+    const tiered = group.filter((member) => member.tier !== undefined);
+    const baseID = tiered
+      .map((member) => member.id.replace(TIER_ID_SUFFIX, ""))
+      .find((base) => comparable(base) === comparable(preferred.name));
+    const id = tiered.length > 0
+      ? `antigravity-${baseID ?? preferred.name.toLowerCase().replace(/[^a-z0-9.-]+/g, "-")}`
+      : `antigravity-${preferred.id.replace(/-tiered$/i, "")}`;
+    definitions[id] = {
+      backendModelID: preferred.id,
+      name: `${preferred.name} (Antigravity)`,
+      tools: !inventory.imageGenerationModelIds?.includes(preferred.id),
+      limit: {
+        context: preferred.entry.maxTokens ?? DEFAULT_LIMIT.context,
+        output: preferred.entry.maxOutputTokens ?? DEFAULT_LIMIT.output,
+      },
+      modalities: modalities(preferred.id, preferred.entry, inventory),
+      ...(tiered.length > 0
+        ? { variants: Object.fromEntries(tiered.map((member) => [member.tier!, { backendModelID: member.id }])) }
+        : {}),
+    };
+  }
+  return definitions;
 }

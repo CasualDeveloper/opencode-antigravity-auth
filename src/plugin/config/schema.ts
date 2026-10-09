@@ -65,7 +65,7 @@ export type AgySdkConfig = z.infer<typeof AgySdkConfigSchema>;
 export type AgySdkCloudProject = z.infer<typeof AgySdkCloudProjectSchema>;
 
 export const ModelDiscoveryConfigSchema = z.object({
-  /** Enable runtime model discovery through OpenCode's provider.models hook. */
+  /** Enable runtime discovery through the native provider and model registries. */
   enabled: z.boolean().default(true),
 
   /** Include public Gemini API models discovered from API keys. */
@@ -139,6 +139,13 @@ export const AntigravityConfigSchema = z.object({
    * @default false
    */
   debug_tui: z.boolean().default(false),
+
+  /**
+   * Expose the Google-grounded search tool to models.
+   * Disable this when OpenCode's targeted web and API tools should be used exclusively.
+   * @default true
+   */
+  google_search_enabled: z.boolean().default(true),
   
   /**
    * Custom directory for debug logs.
@@ -175,20 +182,17 @@ export const AntigravityConfigSchema = z.object({
   session_recovery: z.boolean().default(true),
   
   /**
-   * Automatically send a "continue" prompt after successful recovery.
-   * Only applies when session_recovery is enabled.
-   * 
-   * When false: Only shows toast notification, user must manually continue.
-   * When true: Automatically sends "continue" to resume the session.
-   * 
+   * @deprecated Kept only for backward compatibility.
+   * This flag is ignored at runtime; recovery never sends a prompt.
+   *
    * @default false
    */
   auto_resume: z.boolean().default(false),
   
   /**
-   * Custom text to send when auto-resuming after recovery.
-   * Only used when auto_resume is enabled.
-   * 
+   * @deprecated Kept only for backward compatibility.
+   * This option is ignored at runtime.
+   *
    * @default "continue"
    */
   resume_text: z.string().default("continue"),
@@ -302,6 +306,13 @@ export const AntigravityConfigSchema = z.object({
    * @default 300 (5 minutes)
    */
   max_rate_limit_wait_seconds: z.number().min(0).max(3600).default(300),
+
+  /**
+   * Maximum time in seconds for a single API request before rotating accounts.
+   *
+   * @default 600 (10 minutes)
+   */
+  request_timeout_seconds: z.number().min(30).max(3600).default(600),
   
   /**
    * @deprecated Kept only for backward compatibility.
@@ -513,6 +524,7 @@ export const DEFAULT_CONFIG: AntigravityConfig = {
   toast_scope: 'root_only',
   debug: false,
   debug_tui: false,
+  google_search_enabled: true,
   keep_thinking: false,
   session_recovery: true,
   auto_resume: true,
@@ -526,6 +538,7 @@ export const DEFAULT_CONFIG: AntigravityConfig = {
   proactive_refresh_buffer_seconds: 1800,
   proactive_refresh_check_interval_seconds: 300,
   max_rate_limit_wait_seconds: 300,
+  request_timeout_seconds: 600,
   quota_fallback: false,
   cli_first: false,
   agy_sdk: {

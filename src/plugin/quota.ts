@@ -1,7 +1,7 @@
+import type { AntigravityAvailableModel, AntigravityModelInventory } from "./config/models";
 import {
   ANTIGRAVITY_ENDPOINT_PROD,
   getAntigravityHeaders,
-  ANTIGRAVITY_PROVIDER_ID,
 } from "../constants";
 import { accessTokenExpired, formatRefreshParts, parseRefreshParts } from "./auth";
 import { logQuotaFetch, logQuotaStatus } from "./debug";
@@ -9,7 +9,7 @@ import { ensureProjectContext } from "./project";
 import { refreshAccessToken } from "./token";
 import { getModelFamily } from "./transform/model-resolver";
 import { recordAntigravityAvailableModels } from "./model-catalog";
-import type { PluginClient, OAuthAuthDetails } from "./types";
+import type { OAuthAuthDetails } from "./types";
 import type { AccountMetadataV3 } from "./storage";
 
 const FETCH_TIMEOUT_MS = 10000;
@@ -63,16 +63,15 @@ export interface AccountQuotaResult {
   updatedAccount?: AccountMetadataV3;
 }
 
-export interface FetchAvailableModelsResponse {
+export interface FetchAvailableModelsResponse extends Omit<AntigravityModelInventory, "models"> {
   models?: Record<string, FetchAvailableModelEntry>;
 }
 
-export interface FetchAvailableModelEntry {
+export interface FetchAvailableModelEntry extends AntigravityAvailableModel {
   quotaInfo?: {
     remainingFraction?: number;
     resetTime?: string;
   };
-  displayName?: string;
   modelName?: string;
 }
 
@@ -376,8 +375,6 @@ async function mapWithConcurrency<T, R>(
 async function checkSingleAccountQuota(
   account: AccountMetadataV3,
   index: number,
-  client: PluginClient,
-  providerId: string,
 ): Promise<AccountQuotaResult> {
   const disabled = account.enabled === false;
 
@@ -385,7 +382,7 @@ async function checkSingleAccountQuota(
 
   try {
     if (accessTokenExpired(auth)) {
-      const refreshed = await refreshAccessToken(auth, client, providerId);
+      const refreshed = await refreshAccessToken(auth);
       if (!refreshed) {
         throw new Error("Token refresh failed");
       }
@@ -414,7 +411,7 @@ async function checkSingleAccountQuota(
         error: "Failed to fetch Antigravity quota",
       };
     } else {
-      recordAntigravityAvailableModels(antigravityResponse.models);
+      recordAntigravityAvailableModels(antigravityResponse);
       quotaResult = aggregateQuota(antigravityResponse.models);
     }
 
@@ -459,14 +456,12 @@ async function checkSingleAccountQuota(
 
 export async function checkAccountsQuota(
   accounts: AccountMetadataV3[],
-  client: PluginClient,
-  providerId = ANTIGRAVITY_PROVIDER_ID,
 ): Promise<AccountQuotaResult[]> {
   logQuotaFetch("start", accounts.length);
 
   // Check accounts with bounded concurrency; results stay ordered by index.
   const results = await mapWithConcurrency(accounts, QUOTA_CHECK_CONCURRENCY, (account, index) =>
-    checkSingleAccountQuota(account, index, client, providerId),
+    checkSingleAccountQuota(account, index),
   );
 
   logQuotaFetch(

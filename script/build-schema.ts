@@ -21,6 +21,8 @@ const optionDescriptions: Record<string, string> = {
     "Suppress most toast notifications (rate limit, account switching). Recovery toasts always shown.",
   debug:
     "Enable debug logging to file.",
+  google_search_enabled:
+    "Expose the Google-grounded search tool. Disable it to rely exclusively on OpenCode's targeted web and API tools.",
   log_dir:
     "Custom directory for debug logs.",
   keep_thinking:
@@ -28,9 +30,9 @@ const optionDescriptions: Record<string, string> = {
   session_recovery:
     "Enable automatic session recovery from tool_result_missing errors.",
   auto_resume:
-    "Automatically send resume prompt after successful recovery.",
+    "Deprecated (ignored). Kept for backward compatibility; recovery never sends a prompt.",
   resume_text:
-    "Custom text to send when auto-resuming after recovery.",
+    "Deprecated (ignored). Kept for backward compatibility.",
   empty_response_max_attempts:
     "Maximum retry attempts when Antigravity returns an empty response (no candidates).",
   empty_response_retry_delay_ms:
@@ -47,6 +49,8 @@ const optionDescriptions: Record<string, string> = {
     "Seconds before token expiry to trigger proactive refresh.",
   proactive_refresh_check_interval_seconds:
     "Interval between proactive refresh checks in seconds.",
+  request_timeout_seconds:
+    "Maximum time in seconds for a single API request before rotating to another account.",
   auto_update: "Enable automatic plugin updates.",
   quota_fallback:
     "Deprecated: accepted for backward compatibility but ignored at runtime. Gemini fallback between Antigravity and Gemini CLI is always enabled.",
