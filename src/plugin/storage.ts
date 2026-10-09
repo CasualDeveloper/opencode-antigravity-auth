@@ -182,6 +182,8 @@ export type CooldownReason = "auth-failure" | "network-error" | "project-error" 
 export interface AccountMetadataV3 {
   email?: string;
   refreshToken: string;
+  /** Hashed predecessor tokens identify this account after OAuth token rotation. */
+  previousRefreshTokenHashes?: string[];
   projectId?: string;
   managedProjectId?: string;
   addedAt: number;
@@ -376,6 +378,53 @@ const LOCK_OPTIONS = {
   },
 };
 
+function getLockPath(path: string): string {
+  return `${path}.lock`;
+}
+
+async function tryRecoverLegacyLockFile(path: string): Promise<boolean> {
+  const lockPath = getLockPath(path);
+
+  try {
+    const lockStat = await fs.lstat(lockPath);
+    if (!lockStat.isFile()) {
+      return false;
+    }
+
+    await fs.unlink(lockPath);
+    log.warn("Removed legacy lock file that blocked account storage", {
+      lockPath,
+    });
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") {
+      log.warn("Failed to remove legacy account storage lock file", {
+        lockPath,
+        error: String(error),
+      });
+    }
+    return false;
+  }
+}
+
+async function acquireFileLock(path: string): Promise<() => Promise<void>> {
+  try {
+    return await lockfile.lock(path, LOCK_OPTIONS);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ELOCKED" && code !== "EEXIST") {
+      throw error;
+    }
+
+    if (!(await tryRecoverLegacyLockFile(path))) {
+      throw error;
+    }
+
+    return lockfile.lock(path, LOCK_OPTIONS);
+  }
+}
+
 /**
  * Ensures the file has secure permissions (0600) on POSIX systems.
  * This is a best-effort operation and ignores errors on Windows/unsupported FS.
@@ -405,7 +454,7 @@ async function withFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   await ensureFileExists(path);
   let release: (() => Promise<void>) | null = null;
   try {
-    release = await lockfile.lock(path, LOCK_OPTIONS);
+    release = await acquireFileLock(path);
     return await fn();
   } finally {
     if (release) {
@@ -500,7 +549,7 @@ function sideMutation(
  * forward whichever valid setAt exists, so a legacy no-setAt disk limit cannot override
  * a newer incoming set or discard its timestamp.
  */
-function mergeRateLimitState(
+export function mergeRateLimitState(
   existing: AccountMetadataV3,
   incoming: AccountMetadataV3,
 ): Pick<
@@ -656,6 +705,12 @@ function mergeAccountStorage(
         accountMap.set(acc.refreshToken, {
           ...existingAcc,
           ...acc,
+          ...((existingAcc.previousRefreshTokenHashes?.length || acc.previousRefreshTokenHashes?.length) ? {
+            previousRefreshTokenHashes: [...new Set([
+              ...(existingAcc.previousRefreshTokenHashes ?? []),
+              ...(acc.previousRefreshTokenHashes ?? []),
+            ])],
+          } : {}),
           // Preserve manually configured projectId/managedProjectId if not in incoming
           projectId: acc.projectId ?? existingAcc.projectId,
           managedProjectId: acc.managedProjectId ?? existingAcc.managedProjectId,
@@ -686,6 +741,24 @@ function mergeAccountStorage(
 
 function hashRefreshToken(refreshToken: string): string {
   return createHash("sha256").update(refreshToken).digest("hex");
+}
+
+export function isRefreshTokenDeleted(
+  storage: Pick<AccountStorageV4, "deletedRefreshTokenHashes">,
+  refreshToken: string,
+): boolean {
+  return storage.deletedRefreshTokenHashes?.includes(hashRefreshToken(refreshToken)) ?? false;
+}
+
+export function findAccountByRefreshToken(
+  storage: AccountStorageV4,
+  refreshToken: string,
+): AccountMetadataV3 | undefined {
+  const hash = hashRefreshToken(refreshToken);
+  return storage.accounts.find((account) => account.refreshToken === refreshToken)
+    ?? storage.accounts.find((account) =>
+      Array.isArray(account.previousRefreshTokenHashes) && account.previousRefreshTokenHashes.includes(hash),
+    );
 }
 
 export function deduplicateAccountsByEmail<
@@ -899,7 +972,13 @@ export function migrateV3ToV4(v3: AccountStorageV3): AccountStorageV4 {
   };
 }
 
-export async function loadAccounts(): Promise<AccountStorageV4 | null> {
+export interface LoadAccountsOptions {
+  throwOnError?: boolean;
+}
+
+export async function loadAccounts(
+  options: LoadAccountsOptions = {},
+): Promise<AccountStorageV4 | null> {
   try {
     const path = getStoragePath();
     // Ensure permissions are correct on load (fixes existing files)
@@ -910,6 +989,9 @@ export async function loadAccounts(): Promise<AccountStorageV4 | null> {
 
     if (!Array.isArray(data.accounts)) {
       log.warn("Invalid storage format, ignoring");
+      if (options.throwOnError) {
+        throw new Error("Invalid account storage format: accounts must be an array");
+      }
       return null;
     }
 
@@ -957,6 +1039,11 @@ export async function loadAccounts(): Promise<AccountStorageV4 | null> {
       log.warn("Unknown storage version, ignoring", {
         version: (data as { version?: unknown }).version,
       });
+      if (options.throwOnError) {
+        throw new Error(
+          `Unsupported account storage version: ${String((data as { version?: unknown }).version)}`,
+        );
+      }
       return null;
     }
 
@@ -1003,6 +1090,9 @@ export async function loadAccounts(): Promise<AccountStorageV4 | null> {
       return null;
     }
     log.error("Failed to load account storage", { error: String(error) });
+    if (options.throwOnError) {
+      throw error;
+    }
     return null;
   }
 }
@@ -1072,6 +1162,64 @@ export async function removeAccountFromStorage(refreshToken: string): Promise<vo
         existing.accounts,
         accounts,
       ),
+    });
+  });
+}
+
+export async function replaceAccountRefreshToken(
+  previousRefreshToken: string,
+  nextRefreshToken: string,
+): Promise<void> {
+  if (previousRefreshToken === nextRefreshToken) return;
+
+  const path = getStoragePath();
+  const configDir = dirname(path);
+  await fs.mkdir(configDir, { recursive: true });
+  await ensureGitignore(configDir);
+
+  await withFileLock(path, async () => {
+    const existing = await loadAccountsUnsafe();
+    if (!existing) return;
+
+    const previousIndex = existing.accounts.findIndex(
+      (account) => account.refreshToken === previousRefreshToken,
+    );
+    if (previousIndex === -1) return;
+
+    const nextAlreadyExists = existing.accounts.some(
+      (account, index) => index !== previousIndex && account.refreshToken === nextRefreshToken,
+    );
+    const previous = existing.accounts[previousIndex];
+    const previousHashes = [...new Set([
+      ...(previous?.previousRefreshTokenHashes ?? []),
+      hashRefreshToken(previousRefreshToken),
+    ])];
+    const accounts = nextAlreadyExists
+      ? existing.accounts.filter((_, index) => index !== previousIndex).map((account) =>
+        account.refreshToken === nextRefreshToken
+          ? { ...account, previousRefreshTokenHashes: [...new Set([
+            ...(account.previousRefreshTokenHashes ?? []), ...previousHashes,
+          ])] }
+          : account,
+      )
+      : existing.accounts.map((account, index) =>
+        index === previousIndex ? {
+          ...account, refreshToken: nextRefreshToken, previousRefreshTokenHashes: previousHashes,
+        } : account
+      );
+    const deletedRefreshTokenHashes = new Set(existing.deletedRefreshTokenHashes ?? []);
+    deletedRefreshTokenHashes.add(hashRefreshToken(previousRefreshToken));
+
+    await writeAccountsAtomically(path, {
+      version: 4,
+      accounts,
+      activeIndex: remapActiveIndex(existing.accounts, accounts, existing.activeIndex),
+      activeIndexByFamily: remapActiveIndexByFamily(
+        existing.activeIndexByFamily,
+        existing.accounts,
+        accounts,
+      ),
+      deletedRefreshTokenHashes: Array.from(deletedRefreshTokenHashes),
     });
   });
 }

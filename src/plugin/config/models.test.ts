@@ -1,218 +1,135 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  OPENCODE_MODEL_DEFINITIONS,
-  modelsFromAntigravityAvailableModels,
-  modelsFromGeminiApi,
-} from "./models";
+import { ANTIGRAVITY_INVENTORY_FIXTURE } from "./antigravity-inventory.fixture";
+import { modelsFromAntigravityInventory, type AntigravityModelInventory } from "./models";
 
-const getModel = (name: string) => {
-  const model = OPENCODE_MODEL_DEFINITIONS[name];
-  if (!model) {
-    throw new Error(`Missing model definition for ${name}`);
-  }
-  return model;
+const models = modelsFromAntigravityInventory(ANTIGRAVITY_INVENTORY_FIXTURE);
+
+const model = (id: string) => {
+  const definition = models[id];
+  if (!definition) throw new Error(`Missing normalized model ${id}`);
+  return definition;
 };
 
-describe("OPENCODE_MODEL_DEFINITIONS", () => {
-  it("includes the full set of configured models", () => {
-    const modelNames = Object.keys(OPENCODE_MODEL_DEFINITIONS).sort();
-
-    expect(modelNames).toEqual([
+describe("modelsFromAntigravityInventory", () => {
+  it("normalizes the live inventory into one OpenCode model per family", () => {
+    expect(Object.keys(models).sort()).toEqual([
       "antigravity-claude-opus-4-6-thinking",
       "antigravity-claude-sonnet-4-6",
+      "antigravity-gemini-2.5-pro",
       "antigravity-gemini-3-flash",
-      "antigravity-gemini-3-pro",
+      "antigravity-gemini-3.1-flash-image",
+      "antigravity-gemini-3.1-flash-lite",
       "antigravity-gemini-3.1-pro",
       "antigravity-gemini-3.5-flash",
+      "antigravity-gemini-3.5-flash-lite",
       "antigravity-gemini-3.6-flash",
-      "antigravity-gemini-3.7-flash",
-      "gemini-2.5-flash",
-      "gemini-2.5-pro",
-      "gemini-3-flash-preview",
-      "gemini-3-pro-preview",
-      "gemini-3.1-pro",
-      "gemini-3.1-pro-preview-customtools",
-      "gemini-3.5-flash",
-      "gemini-3.5-flash-lite",
-      "gemini-3.6-flash",
-      "gemini-3.7-flash",
+      "antigravity-gemini-3.8-flash",
+      "antigravity-gpt-oss-120b",
     ]);
   });
 
-  it("defines Gemini 3 variants for Antigravity models", () => {
-    expect(getModel("antigravity-gemini-3-pro").variants).toEqual({
-      low: { thinkingLevel: "low" },
-      high: { thinkingLevel: "high" },
+  it("routes advertised tiers to their exact backend IDs, defaulting to the lowest tier", () => {
+    expect(model("antigravity-gemini-3.5-flash")).toMatchObject({
+      name: "Gemini 3.5 Flash (Antigravity)",
+      backendModelID: "gemini-3.5-flash-extra-low",
+      variants: {
+        low: { backendModelID: "gemini-3.5-flash-extra-low" },
+        medium: { backendModelID: "gemini-3.5-flash-low" },
+        high: { backendModelID: "gemini-3-flash-agent" },
+      },
     });
-
-    expect(getModel("antigravity-gemini-3.1-pro").variants).toEqual({
-      low: { thinkingLevel: "low" },
-      high: { thinkingLevel: "high" },
+    expect(model("antigravity-gemini-3.6-flash").variants).toEqual({
+      low: { backendModelID: "gemini-3.6-flash-low" },
+      medium: { backendModelID: "gemini-3.6-flash-medium" },
+      high: { backendModelID: "gemini-3.6-flash-high" },
     });
-
-    expect(getModel("antigravity-gemini-3-flash").variants).toEqual({
-      minimal: { thinkingLevel: "minimal" },
-      low: { thinkingLevel: "low" },
-      medium: { thinkingLevel: "medium" },
-      high: { thinkingLevel: "high" },
-    });
-
-    expect(getModel("antigravity-gemini-3.5-flash").variants).toEqual({
-      minimal: { thinkingLevel: "minimal" },
-      low: { thinkingLevel: "low" },
-      medium: { thinkingLevel: "medium" },
-      high: { thinkingLevel: "high" },
-    });
-
-    expect(getModel("antigravity-gemini-3.6-flash").variants).toEqual({
-      low: { thinkingLevel: "low" },
-      medium: { thinkingLevel: "medium" },
-      high: { thinkingLevel: "high" },
-    });
-
-    expect(getModel("antigravity-gemini-3.7-flash").variants).toEqual({
-      minimal: { thinkingLevel: "minimal" },
-      low: { thinkingLevel: "low" },
-      medium: { thinkingLevel: "medium" },
-      high: { thinkingLevel: "high" },
-    });
-    expect(getModel("antigravity-gemini-3.6-flash").temperature).toBe(false);
-    expect(getModel("gemini-3.6-flash").temperature).toBe(false);
-    expect(getModel("gemini-3.5-flash-lite").temperature).toBe(false);
-    expect(getModel("gemini-3.6-flash").variants).toEqual({
-      medium: { thinkingLevel: "medium" },
-      high: { thinkingLevel: "high" },
-    });
-    expect(getModel("gemini-3.7-flash").variants).toEqual({
-      minimal: { thinkingLevel: "minimal" },
-      low: { thinkingLevel: "low" },
-      medium: { thinkingLevel: "medium" },
-      high: { thinkingLevel: "high" },
-    });
-    expect(getModel("gemini-3.5-flash-lite").variants).toEqual({
-      minimal: { thinkingLevel: "minimal" },
-      low: { thinkingLevel: "low" },
-      medium: { thinkingLevel: "medium" },
-      high: { thinkingLevel: "high" },
+    expect(model("antigravity-gpt-oss-120b")).toMatchObject({
+      name: "GPT-OSS 120B (Antigravity)",
+      variants: { medium: { backendModelID: "gpt-oss-120b-medium" } },
     });
   });
 
-  it("defines thinking budget variants for Claude thinking models", () => {
-    expect(getModel("antigravity-claude-opus-4-6-thinking").variants).toEqual({
-      low: { thinkingConfig: { thinkingBudget: 8192 } },
-      max: { thinkingConfig: { thinkingBudget: 32768 } },
+  it("follows the backend deprecation map instead of keeping a replaced ID", () => {
+    expect(model("antigravity-gemini-3.1-pro").variants).toEqual({
+      low: { backendModelID: "gemini-3.1-pro-low" },
+      high: { backendModelID: "gemini-pro-agent" },
     });
-  });
-});
-
-describe("dynamic model discovery helpers", () => {
-  it("converts Gemini models.list metadata into OpenCode models", () => {
-    const models = modelsFromGeminiApi([
-      {
-        name: "models/gemini-2.5-flash",
-        displayName: "Gemini 2.5 Flash",
-        inputTokenLimit: 1000,
-        outputTokenLimit: 2000,
-        supportedGenerationMethods: ["generateContent"],
-      },
-      {
-        name: "models/text-embedding-004",
-        displayName: "Text Embedding 004",
-        supportedGenerationMethods: ["embedContent"],
-      },
+    const backendIDs = Object.values(models).flatMap((definition) => [
+      definition.backendModelID,
+      ...Object.values(definition.variants ?? {}).map((variant) => variant.backendModelID),
     ]);
-
-    expect(models["gemini-2.5-flash"]).toMatchObject({
-      name: "Gemini 2.5 Flash (Gemini API)",
-      limit: { context: 1000, output: 2000 },
-      modalities: { input: ["text", "image", "pdf"], output: ["text"] },
-    });
-    expect(models["text-embedding-004"]).toBeUndefined();
+    expect(backendIDs).not.toContain("gemini-3.1-pro-high");
   });
 
-  it("keeps Gemini models.list resource names distinct from shared base aliases", () => {
-    const models = modelsFromGeminiApi([
-      {
-        name: "models/gemini-2.5-flash-001",
-        baseModelId: "gemini-2.5-flash",
-        displayName: "Gemini 2.5 Flash 001",
-        inputTokenLimit: 1000,
-        outputTokenLimit: 2000,
-        supportedGenerationMethods: ["generateContent"],
-      },
-      {
-        name: "models/gemini-2.5-flash-002",
-        baseModelId: "gemini-2.5-flash",
-        displayName: "Gemini 2.5 Flash 002",
-        inputTokenLimit: 3000,
-        outputTokenLimit: 4000,
-        supportedGenerationMethods: ["generateContent"],
-      },
-    ]);
-
-    expect(models["gemini-2.5-flash-001"]?.limit).toEqual({ context: 1000, output: 2000 });
-    expect(models["gemini-2.5-flash-002"]?.limit).toEqual({ context: 3000, output: 4000 });
+  it("collapses aliases into the model their backend tag names", () => {
+    expect(model("antigravity-gemini-3.5-flash-lite").backendModelID).toBe("gemini-3.5-flash-lite");
+    expect(Object.keys(models).filter((id) => id.startsWith("antigravity-gemini-2.5-flash"))).toEqual([]);
   });
 
-  it("converts Antigravity available models while preserving curated variants and inferring dynamic ones", () => {
-    const models = modelsFromAntigravityAvailableModels({
-      "gemini-3-flash": {
-        displayName: "Gemini 3 Flash",
-        modelName: "gemini-3-flash",
-      },
-      "gemini-3.6-flash": {
-        displayName: "Gemini 3.6 Flash",
-        modelName: "gemini-3.6-flash",
-      },
-      "gemini-3.7-flash": {
-        displayName: "Gemini 3.7 Flash",
-        modelName: "gemini-3.7-flash",
-      },
-      "gemini-3.8-flash": {
-        displayName: "Gemini 3.8 Flash Preview",
-        modelName: "gemini-3.8-flash",
-      },
-      "gemini-3.8-pro": {
-        displayName: "Gemini 3.8 Pro Preview",
-        modelName: "gemini-3.8-pro",
-      },
-      "claude-sonnet-4-6": {
-        displayName: "Claude Sonnet 4.6",
-      },
-    });
+  it("excludes internal and editor-only models", () => {
+    expect(Object.keys(models).some((id) => /chat_|tab_/.test(id))).toBe(false);
+  });
 
-    expect(models["antigravity-gemini-3-flash"]?.variants).toEqual({
-      minimal: { thinkingLevel: "minimal" },
-      low: { thinkingLevel: "low" },
-      medium: { thinkingLevel: "medium" },
-      high: { thinkingLevel: "high" },
+  it("keeps an untitled model only because a backend role list names it", () => {
+    expect(model("antigravity-gemini-3.8-flash")).toMatchObject({
+      name: "Gemini 3.8 Flash (Antigravity)",
+      backendModelID: "gemini-3.8-flash-tiered",
     });
-    expect(models["antigravity-gemini-3.6-flash"]?.variants).toEqual({
-      low: { thinkingLevel: "low" },
-      medium: { thinkingLevel: "medium" },
-      high: { thinkingLevel: "high" },
+  });
+
+  it("does not invent variants for single backend models", () => {
+    for (const id of [
+      "antigravity-claude-opus-4-6-thinking",
+      "antigravity-gemini-3-flash",
+      "antigravity-gemini-2.5-pro",
+    ]) {
+      expect(model(id).variants).toBeUndefined();
+    }
+    expect(model("antigravity-claude-opus-4-6-thinking").name).toBe("Claude Opus 4.6 (Thinking) (Antigravity)");
+  });
+
+  it("uses advertised limits, input types, and image generation roles", () => {
+    expect(model("antigravity-claude-opus-4-6-thinking")).toMatchObject({
+      tools: true,
+      limit: { context: 250000, output: 64000 },
+      // Claude advertises JPEG 2000 video frames, but not video support.
+      modalities: { input: ["text", "image"], output: ["text"] },
     });
-    expect(models["antigravity-gemini-3.7-flash"]?.variants).toEqual({
-      minimal: { thinkingLevel: "minimal" },
-      low: { thinkingLevel: "low" },
-      medium: { thinkingLevel: "medium" },
-      high: { thinkingLevel: "high" },
+    expect(model("antigravity-gemini-3-flash").modalities.input)
+      .toEqual(["text", "image", "pdf", "audio", "video"]);
+    expect(model("antigravity-gemini-3.1-flash-lite")).toMatchObject({
+      limit: { context: 1048576, output: 65535 },
+      modalities: { input: ["text"], output: ["text"] },
     });
-    // Inferred variants for dynamically discovered models not in static table
-    expect(models["antigravity-gemini-3.8-flash"]?.variants).toEqual({
-      minimal: { thinkingLevel: "minimal" },
-      low: { thinkingLevel: "low" },
-      medium: { thinkingLevel: "medium" },
-      high: { thinkingLevel: "high" },
+    expect(model("antigravity-gemini-3.1-flash-image")).toMatchObject({
+      tools: false,
+      limit: { context: 200000, output: 32000 },
+      modalities: { input: ["text"], output: ["text", "image"] },
     });
-    expect(models["antigravity-gemini-3.8-pro"]?.variants).toEqual({
-      low: { thinkingLevel: "low" },
-      high: { thinkingLevel: "high" },
+  });
+
+  it("does not depend on response order", () => {
+    const reversed: AntigravityModelInventory = {
+      ...ANTIGRAVITY_INVENTORY_FIXTURE,
+      models: Object.fromEntries(Object.entries(ANTIGRAVITY_INVENTORY_FIXTURE.models ?? {}).reverse()),
+    };
+    expect(modelsFromAntigravityInventory(reversed)).toEqual(models);
+  });
+
+  it("prefers the role-assigned ID among same-named entries", () => {
+    const normalized = modelsFromAntigravityInventory({
+      models: {
+        "a-legacy": { displayName: "Future Model" },
+        "z-current": { displayName: "Future Model" },
+      },
+      agentModelSorts: [{ groups: [{ modelIds: ["z-current"] }] }],
     });
-    expect(models["antigravity-claude-sonnet-4-6"]).toMatchObject({
-      name: "Claude Sonnet 4.6 (Antigravity)",
-      limit: { context: 200000, output: 64000 },
-    });
+    expect(Object.values(normalized).map((definition) => definition.backendModelID)).toEqual(["z-current"]);
+  });
+
+  it("returns an empty catalog for an empty inventory", () => {
+    expect(modelsFromAntigravityInventory({ models: {} })).toEqual({});
+    expect(modelsFromAntigravityInventory({})).toEqual({});
   });
 });

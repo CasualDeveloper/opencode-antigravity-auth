@@ -1,9 +1,10 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   deduplicateAccountsByEmail,
   migrateV2ToV3,
   loadAccounts,
   removeAccountFromStorage,
+  replaceAccountRefreshToken,
   saveAccounts,
   type AccountMetadata,
   type AccountStorage,
@@ -17,9 +18,13 @@ import {
   appendFileSync,
 } from "node:fs";
 
+const { lockMock } = vi.hoisted(() => ({
+  lockMock: vi.fn(),
+}));
+
 vi.mock("proper-lockfile", () => ({
   default: {
-    lock: vi.fn().mockResolvedValue(vi.fn().mockResolvedValue(undefined)),
+    lock: lockMock,
   },
 }));
 
@@ -278,6 +283,43 @@ describe("removeAccountFromStorage", () => {
   });
 });
 
+describe("replaceAccountRefreshToken", () => {
+  it("rotates one token atomically without losing concurrent accounts or resurrecting the old token", async () => {
+    const initial: AccountStorageV4 = {
+      version: 4,
+      accounts: [
+        { refreshToken: "old-token", email: "rotated@example.com", addedAt: 1, lastUsed: 1 },
+        { refreshToken: "existing", email: "existing@example.com", addedAt: 2, lastUsed: 2 },
+        { refreshToken: "concurrent", email: "concurrent@example.com", addedAt: 3, lastUsed: 3 },
+      ],
+      activeIndex: 0,
+      activeIndexByFamily: { claude: 0, gemini: 2 },
+    };
+    let diskContent = JSON.stringify(initial);
+    lockMock.mockResolvedValue(vi.fn().mockResolvedValue(undefined));
+    vi.mocked(fs.readFile).mockImplementation(async (path) => {
+      if (String(path).endsWith(".gitignore")) return "";
+      return diskContent;
+    });
+    vi.mocked(fs.writeFile).mockImplementation(async (path, data) => {
+      if (String(path).includes(".tmp")) diskContent = String(data);
+    });
+
+    await replaceAccountRefreshToken("old-token", "rotated-token");
+    await saveAccounts(initial);
+
+    const saved = JSON.parse(diskContent) as AccountStorageV4;
+    expect(saved.accounts.map((account) => account.refreshToken)).toEqual([
+      "rotated-token",
+      "existing",
+      "concurrent",
+    ]);
+    expect(saved.activeIndex).toBe(0);
+    expect(saved.activeIndexByFamily).toEqual({ claude: 0, gemini: 2 });
+    expect(diskContent).not.toContain("old-token");
+  });
+});
+
 vi.mock("node:fs", async () => {
   const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
   return {
@@ -288,6 +330,7 @@ vi.mock("node:fs", async () => {
       writeFile: vi.fn(),
       mkdir: vi.fn().mockResolvedValue(undefined),
       access: vi.fn().mockResolvedValue(undefined),
+      lstat: vi.fn(),
       unlink: vi.fn(),
       rename: vi.fn().mockResolvedValue(undefined),
       appendFile: vi.fn(),
@@ -297,6 +340,64 @@ vi.mock("node:fs", async () => {
     writeFileSync: vi.fn(),
     appendFileSync: vi.fn(),
   };
+});
+
+describe("saveAccounts lock recovery", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    lockMock.mockReset();
+    lockMock.mockResolvedValue(vi.fn().mockResolvedValue(undefined));
+  });
+
+  afterEach(() => {
+    lockMock.mockReset();
+    lockMock.mockResolvedValue(vi.fn().mockResolvedValue(undefined));
+  });
+
+  it("removes a legacy lock file and retries lock acquisition", async () => {
+    const lockError = new Error("lock held") as NodeJS.ErrnoException;
+    lockError.code = "ELOCKED";
+    lockMock
+      .mockRejectedValueOnce(lockError)
+      .mockResolvedValueOnce(vi.fn().mockResolvedValue(undefined));
+    vi.mocked(fs.lstat).mockResolvedValue({
+      isFile: () => true,
+    } as unknown as import("node:fs").Stats);
+    vi.mocked(fs.unlink).mockResolvedValue(undefined);
+    vi.mocked(fs.readFile).mockRejectedValue({ code: "ENOENT" });
+
+    await saveAccounts({
+      version: 4,
+      accounts: [{ refreshToken: "r1", addedAt: 1, lastUsed: 1 }],
+      activeIndex: 0,
+    });
+
+    expect(lockMock).toHaveBeenCalledTimes(2);
+    expect(fs.unlink).toHaveBeenCalledWith(
+      expect.stringContaining("antigravity-accounts.json.lock"),
+    );
+  });
+
+  it("does not remove an active lock directory", async () => {
+    const lockError = new Error("lock held") as NodeJS.ErrnoException;
+    lockError.code = "ELOCKED";
+    lockMock.mockRejectedValue(lockError);
+    vi.mocked(fs.lstat).mockResolvedValue({
+      isFile: () => false,
+    } as unknown as import("node:fs").Stats);
+    vi.mocked(fs.readFile).mockRejectedValue({ code: "ENOENT" });
+
+    await expect(
+      saveAccounts({
+        version: 4,
+        accounts: [{ refreshToken: "r1", addedAt: 1, lastUsed: 1 }],
+        activeIndex: 0,
+      }),
+    ).rejects.toThrow("lock held");
+
+    expect(lockMock).toHaveBeenCalledTimes(1);
+    expect(fs.unlink).not.toHaveBeenCalled();
+  });
 });
 
 describe("Storage Migration", () => {

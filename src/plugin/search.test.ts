@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeSearch } from "./search";
+import { recordAntigravityAvailableModels, resetAntigravityModelCatalogForTests } from "./model-catalog";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -42,10 +43,15 @@ function mockFetch(body: unknown, status = 200) {
 
 describe("executeSearch", () => {
   beforeEach(() => {
+    recordAntigravityAvailableModels({
+      models: { "search-route": {} }, webSearchModelIds: ["search-route"],
+    }, { projectId: "proj", accessToken: "tok" });
     vi.stubGlobal("fetch", mockFetch(makeResponse("Default result")));
   });
 
   afterEach(() => {
+    resetAntigravityModelCatalogForTests();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -129,10 +135,33 @@ describe("executeSearch", () => {
   it("includes Authorization header with the provided token", async () => {
     const spy = mockFetch(makeResponse("ok"));
     vi.stubGlobal("fetch", spy);
-    await executeSearch({ query: "q" }, "bearer-token-xyz", "proj");
+    await executeSearch({ query: "q" }, "tok", "proj");
     const [, init] = spy.mock.calls[0] as [string, RequestInit];
     expect((init.headers as Record<string, string>)["Authorization"]).toBe(
-      "Bearer bearer-token-xyz",
+      "Bearer tok",
     );
+    expect(JSON.parse(String(init.body)).model).toBe("search-route");
+  });
+
+  it.each([["other-token", "proj"], ["tok", "other-project"]])("discovers the search route on a scope change", async (token, project) => {
+    const spy = mockFetch(makeResponse("ok")).mockResolvedValueOnce(new Response(JSON.stringify({
+      models: { "new-route": {} }, webSearchModelIds: ["removed-route", "new-route"],
+    })));
+    vi.stubGlobal("fetch", spy);
+    await executeSearch({ query: "q" }, token, project);
+    await executeSearch({ query: "second" }, token, project);
+    expect(spy.mock.calls).toHaveLength(3);
+    expect(spy.mock.calls[0]?.[0]).toContain("fetchAvailableModels");
+    for (const [, init] of spy.mock.calls.slice(1)) {
+      expect(JSON.parse(init.body)).toMatchObject({ project, model: "new-route" });
+    }
+  });
+
+  it("does not send the query when discovery advertises no search route", async () => {
+    const spy = mockFetch({ models: { "chat-only": {} }, webSearchModelIds: [] });
+    vi.stubGlobal("fetch", spy);
+    expect(await executeSearch({ query: "q" }, "other-token", "proj")).toContain("Search Unavailable");
+    expect(spy).toHaveBeenCalledOnce();
+    expect(spy.mock.calls[0]?.[0]).toContain("fetchAvailableModels");
   });
 });

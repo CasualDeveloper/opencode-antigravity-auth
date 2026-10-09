@@ -70,7 +70,7 @@ export const GEMINI_CLI_ENDPOINT = ANTIGRAVITY_ENDPOINT_PROD;
  */
 export const ANTIGRAVITY_DEFAULT_PROJECT_ID = "rising-fact-p41fc";
 
-export const ANTIGRAVITY_VERSION_FALLBACK = "1.18.3";
+export const ANTIGRAVITY_VERSION_FALLBACK = "2.0.6";
 let antigravityVersion = ANTIGRAVITY_VERSION_FALLBACK;
 let versionLocked = false;
 
@@ -222,12 +222,6 @@ export const MIN_SIGNATURE_LENGTH = 50;
 // ============================================================================
 // GOOGLE SEARCH TOOL CONSTANTS
 // ============================================================================
-
-/**
- * Model used for Google Search grounding requests.
- * Uses gemini-2.5-flash for fast, cost-effective search operations. (3-flash is always at capacity and doesn't support souce citation).
- */
-export const SEARCH_MODEL = "gemini-2.5-flash";
 
 /**
  * Thinking budget for deep search (more thorough analysis).

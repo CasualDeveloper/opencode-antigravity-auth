@@ -125,6 +125,7 @@ function supportsThinkingTiers(model: string): boolean {
  * Only extracts tier for models that support thinking tiers.
  */
 function extractThinkingTierFromModel(model: string): ThinkingTier | undefined {
+  if (model.endsWith("-extra-low")) return undefined;
   // Only extract tier for models that support thinking tiers
   if (!supportsThinkingTiers(model)) {
     return undefined;

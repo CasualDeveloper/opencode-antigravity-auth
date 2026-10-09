@@ -1,25 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 
-/**
- * Regression tests for the version fallback mechanism.
- *
- * Issue #468: On WSL2/AlmaLinux with strict firewall rules, both the
- * auto-updater API and changelog fetch fail. The plugin then uses the
- * hardcoded fallback version in User-Agent headers. If the fallback is
- * too old, the backend rejects requests for newer models (e.g., Gemini 3.1 Pro)
- * with "not available on this version".
- *
- * These tests verify the fallback is current and that the
- * network-failure path correctly uses it.
- */
+const { readManifest } = vi.hoisted(() => ({ readManifest: vi.fn() }))
+vi.mock("node:fs/promises", async (original) => ({
+  ...await original<typeof import("node:fs/promises")>(), readFile: readManifest,
+}))
 
 // Reset module state between tests so versionLocked starts fresh
 beforeEach(() => {
   vi.resetModules()
+  readManifest.mockReset().mockRejectedValue(new Error("Not installed"))
 })
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 describe("ANTIGRAVITY_VERSION_FALLBACK", () => {
@@ -51,8 +45,8 @@ describe("setAntigravityVersion", () => {
   })
 })
 
-describe("initAntigravityVersion — network failure path", () => {
-  it("falls back to hardcoded version when both fetches throw", async () => {
+describe("initAntigravityVersion", () => {
+  it("uses the offline baseline on network failure", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network unreachable")))
 
     const { ANTIGRAVITY_VERSION_FALLBACK, getAntigravityVersion } = await import("../constants.ts")
@@ -62,7 +56,7 @@ describe("initAntigravityVersion — network failure path", () => {
     expect(getAntigravityVersion()).toBe(ANTIGRAVITY_VERSION_FALLBACK)
   })
 
-  it("falls back to hardcoded version when both fetches return non-ok", async () => {
+  it("uses the offline baseline on a non-ok response", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({ ok: false, status: 503, text: async () => "" }),
@@ -75,17 +69,30 @@ describe("initAntigravityVersion — network failure path", () => {
     expect(getAntigravityVersion()).toBe(ANTIGRAVITY_VERSION_FALLBACK)
   })
 
-  it("uses API version when auto-updater responds", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({ ok: true, text: async () => "1.19.0" }),
-    )
+  it("resolves the official App build once, ignoring unrelated CLI and IDE versions", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(`
+      <a href="https://example.org/cli/9.9.9/">CLI</a>
+      <a href="https://storage.googleapis.com/antigravity-public/antigravity-ide/3.4.5-123/">IDE</a>
+      <a href="https://storage.googleapis.com/antigravity-public/antigravity-hub/2.33.0-456/darwin-arm/Antigravity.dmg">App</a>`))
+    vi.stubGlobal("fetch", fetch)
 
     const { getAntigravityVersion } = await import("../constants.ts")
     const { initAntigravityVersion } = await import("./version.ts")
-    await initAntigravityVersion()
+    await Promise.all([initAntigravityVersion(), initAntigravityVersion()])
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(getAntigravityVersion()).toBe("2.33.0")
+  })
 
-    expect(getAntigravityVersion()).toBe("1.19.0")
+  it("prefers the installed macOS App without making a network request", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin")
+    readManifest.mockResolvedValue("<key>CFBundleShortVersionString</key>\n<string>2.12.2</string>")
+    const fetch = vi.fn()
+    vi.stubGlobal("fetch", fetch)
+    const { initAntigravityVersion } = await import("./version.ts")
+    const { getAntigravityVersion } = await import("../constants.ts")
+    await initAntigravityVersion()
+    expect(getAntigravityVersion()).toBe("2.12.2")
+    expect(fetch).not.toHaveBeenCalled()
   })
 
   it("fallback version appears in User-Agent header", async () => {

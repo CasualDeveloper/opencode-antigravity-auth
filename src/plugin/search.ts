@@ -1,3 +1,11 @@
+import type { Plugin } from "@opencode/plugin"
+import { z } from "zod"
+import { accessTokenExpired, parseRefreshParts, resolveOAuthAuth } from "./auth"
+import { AccountManager } from "./accounts"
+import { ensureProjectContext } from "./project"
+import { getCachedAntigravityAvailableModels, recordAntigravityAvailableModels } from "./model-catalog"
+import { fetchAvailableModels } from "./quota"
+import { refreshAccessToken } from "./token"
 /**
  * Google Search Tool Implementation
  *
@@ -9,7 +17,6 @@
 import {
   ANTIGRAVITY_ENDPOINT,
   getAntigravityHeaders,
-  SEARCH_MODEL,
   SEARCH_TIMEOUT_MS,
   SEARCH_SYSTEM_INSTRUCTION,
 } from "../constants";
@@ -262,7 +269,6 @@ export async function executeSearch(
   // Wrap in Antigravity format
   const wrappedBody = {
     project: projectId,
-    model: SEARCH_MODEL,
     userAgent: "antigravity",
     requestId: generateRequestId(),
     request: {
@@ -281,6 +287,20 @@ export async function executeSearch(
   });
 
   try {
+    const timeout = AbortSignal.timeout(SEARCH_TIMEOUT_MS);
+    const signal = abortSignal ? AbortSignal.any([abortSignal, timeout]) : timeout;
+    signal.throwIfAborted();
+    const scope = { accessToken, projectId };
+    let inventory = getCachedAntigravityAvailableModels(scope);
+    if (!inventory) {
+      inventory = await fetchAvailableModels(accessToken, projectId, signal);
+      if (!inventory.models) throw new Error("Antigravity discovery returned no model inventory");
+      recordAntigravityAvailableModels(inventory, scope);
+    }
+    const models = inventory.models ?? {};
+    const model = inventory.webSearchModelIds?.find((id) => Object.hasOwn(models, id));
+    if (!model) return "## Search Unavailable\n\nAntigravity did not advertise a grounded-search model for this account.";
+    signal.throwIfAborted();
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -288,8 +308,8 @@ export async function executeSearch(
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(wrappedBody),
-      signal: abortSignal ?? AbortSignal.timeout(SEARCH_TIMEOUT_MS),
+      body: JSON.stringify({ ...wrappedBody, model }),
+      signal,
     });
 
     if (!response.ok) {
@@ -310,4 +330,94 @@ export async function executeSearch(
     log.debug("Search execution error", { error: message });
     return `## Search Error\n\nFailed to execute search: ${message}. Please try again with a different query.`;
   }
+}
+
+const SearchInput = z.object({
+  query: z.string().min(1).describe("The search query or question to answer using web search"),
+  urls: z.array(z.string().url()).optional().describe("Specific URLs to fetch and analyze"),
+  thinking: z.boolean().optional().describe("Enable deep thinking for more thorough analysis"),
+})
+
+const SearchInputSchema = {
+  type: "object",
+  properties: {
+    query: { type: "string", minLength: 1 },
+    urls: { type: "array", items: { type: "string", format: "uri" } },
+    thinking: { type: "boolean" },
+  },
+  required: ["query"],
+  additionalProperties: false,
+} as const
+
+const SearchOutputSchema = { type: "string" } as const
+
+const SEARCH_TOOL_DESCRIPTION = `Search the public web with Google grounding when broad discovery across unknown sources or current information is required.
+
+Do not use for a known URL; use webfetch instead. For GitHub repositories, issues, pull requests, commits, or releases, prefer available GitHub or API tools. Prefer first-party targeted tools when available.`
+
+export async function registerGoogleSearch(
+  context: Pick<Plugin.Context, "integration" | "tool">,
+  enabled = true,
+): Promise<void> {
+  if (!enabled) return
+
+  await context.tool.transform((tools) => {
+    tools.add({
+      name: "google_search",
+      description: SEARCH_TOOL_DESCRIPTION,
+      input: SearchInputSchema,
+      output: SearchOutputSchema,
+      options: { codemode: false },
+      execute: async (input, toolContext) => {
+        const args = SearchInput.parse(input)
+        const connectedAuth = await resolveOAuthAuth(context)
+        if (!connectedAuth) {
+          const output = "Error: Google Antigravity is not authenticated. Connect the integration first."
+          return { output, content: output }
+        }
+
+        const accountManager = await AccountManager.loadFromDisk(connectedAuth)
+        const connectedToken = parseRefreshParts(connectedAuth.refresh).refreshToken
+        const account = accountManager.getAccounts()
+          .find((candidate) => candidate.parts.refreshToken === connectedToken)
+          ?? accountManager.getCurrentOrNextForFamily("gemini")
+        let auth = account ? accountManager.toAuthDetails(account) : connectedAuth
+        if (!auth.access || accessTokenExpired(auth)) {
+          const refreshed = await refreshAccessToken(auth)
+          if (!refreshed?.access) {
+            const output = "Error: No valid Google Antigravity access token is available. Reconnect the integration."
+            return { output, content: output }
+          }
+          auth = refreshed
+          if (account) {
+            accountManager.updateFromAuth(account, auth)
+            await accountManager.saveToDisk()
+          }
+        }
+
+        const projectContext = await ensureProjectContext(auth)
+        if (account && projectContext.auth.refresh !== auth.refresh) {
+          accountManager.updateFromAuth(account, projectContext.auth)
+          await accountManager.saveToDisk()
+        }
+        const accessToken = projectContext.auth.access ?? auth.access
+        if (!accessToken) {
+          const output = "Error: No valid Google Antigravity access token is available. Reconnect the integration."
+          return { output, content: output }
+        }
+
+        const output = await executeSearch(
+          {
+            query: args.query,
+            urls: args.urls,
+            thinking: args.thinking ?? true,
+          },
+          accessToken,
+          projectContext.effectiveProjectId,
+          toolContext.signal,
+        )
+        return { output, content: output }
+      },
+    })
+  })
 }
