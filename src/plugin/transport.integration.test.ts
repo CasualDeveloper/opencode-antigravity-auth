@@ -5,22 +5,8 @@ import { join } from "node:path"
 import { createGoogleGenerativeAI } from "@ai-sdk/google"
 import type { LanguageModelV3CallOptions } from "@ai-sdk/provider"
 
-vi.mock("@opencode-ai/plugin", () => ({
-  tool: Object.assign(
-    (definition: unknown) => definition,
-    {
-      schema: {
-        string: () => ({ describe: () => ({}) }),
-        boolean: () => ({ optional: () => ({ default: () => ({ describe: () => ({}) }) }) }),
-        array: () => ({ optional: () => ({ describe: () => ({}) }) }),
-      },
-    },
-  ),
-}))
-
-import { createAntigravityPlugin } from "./plugin.ts"
-import { AccountManager } from "./plugin/accounts.ts"
-import type { LoaderResult, PluginClient, PluginContext } from "./plugin/types.ts"
+import { createAntigravityRequestPipeline, type AntigravityRequestPipeline } from "./transport"
+import { AccountManager } from "./accounts.ts"
 
 const testDirectories: string[] = []
 const plugins: Array<{ dispose?: () => void }> = []
@@ -45,24 +31,7 @@ function trackPlugin<T extends { dispose?: () => void }>(plugin: T): T {
   return plugin
 }
 
-function createClient(): PluginClient {
-  return {
-    app: { log: async () => undefined },
-    tui: { showToast: async () => undefined },
-    auth: { set: async () => undefined },
-    session: {
-      prompt: async () => undefined,
-      abort: async () => undefined,
-      messages: async () => ({ data: [] }),
-    },
-  } as unknown as PluginClient
-}
-
-function isLoader(value: LoaderResult | Record<string, unknown>): value is LoaderResult {
-  return "fetch" in value && typeof value.fetch === "function"
-}
-
-function driverFetch(loader: LoaderResult): typeof globalThis.fetch {
+function driverFetch(loader: AntigravityRequestPipeline): typeof globalThis.fetch {
   return async (input, init) => {
     if (input instanceof URL) return loader.fetch(input.toString(), init)
     return loader.fetch(input, init)
@@ -131,22 +100,16 @@ describe("Antigravity transport through @ai-sdk/google", () => {
       return googleResponse()
     }))
     const directory = createDirectory()
-    const context: PluginContext = {
-      client: createClient(),
-      directory,
-      runtime: "v2",
-    }
-    const plugin = trackPlugin(await createAntigravityPlugin("google")(context))
-    const loaded = await plugin.auth.loader(
+    const loaded = await createAntigravityRequestPipeline({ directory, getAuth:
       async () => ({
         type: "oauth",
         refresh: "refresh-token|test-project|managed-project",
         access: "oauth-access",
         expires: Date.now() + 3_600_000,
       }),
-      { id: "google" },
-    )
-    if (!isLoader(loaded)) throw new Error("OAuth did not produce a fetch loader")
+    })
+    if (!loaded) throw new Error("OAuth did not produce a fetch loader")
+    trackPlugin(loaded)
     const model = createGoogleGenerativeAI({ apiKey: "driver-placeholder", fetch: driverFetch(loaded) })("gemini-3-pro-preview")
 
     const result = await model.doGenerate(generateOptions("high"))
@@ -171,16 +134,11 @@ describe("Antigravity transport through @ai-sdk/google", () => {
       return googleResponse()
     }))
     const directory = createDirectory()
-    const plugin = trackPlugin(await createAntigravityPlugin("google")({
-      client: createClient(),
-      directory,
-      runtime: "v2",
-    }))
-    const loaded = await plugin.auth.loader(
+    const loaded = await createAntigravityRequestPipeline({ directory, getAuth:
       async () => ({ type: "api", key: "plugin-api-key" }),
-      { id: "google" },
-    )
-    if (!isLoader(loaded)) throw new Error("API-key auth did not produce a fetch loader")
+    })
+    if (!loaded) throw new Error("API-key auth did not produce a fetch loader")
+    trackPlugin(loaded)
     const model = createGoogleGenerativeAI({ apiKey: "driver-placeholder", fetch: driverFetch(loaded) })("gemini-2.5-flash")
 
     const result = await model.doGenerate(generateOptions("medium"))
@@ -231,21 +189,16 @@ describe("Antigravity transport through @ai-sdk/google", () => {
         },
       ],
     }, null, 2))
-    const plugin = trackPlugin(await createAntigravityPlugin("google")({
-      client: createClient(),
-      directory,
-      runtime: "v2",
-    }))
-    const loaded = await plugin.auth.loader(
+    const loaded = await createAntigravityRequestPipeline({ directory, getAuth:
       async () => ({
         type: "oauth",
         refresh: "oauth-refresh-b|oauth-project-b|oauth-managed-b",
         access: "oauth-access-b",
         expires: Date.now() + 3_600_000,
       }),
-      { id: "google" },
-    )
-    if (!isLoader(loaded)) throw new Error("OAuth did not produce a fetch loader")
+    })
+    if (!loaded) throw new Error("OAuth did not produce a fetch loader")
+    trackPlugin(loaded)
     const model = createGoogleGenerativeAI({ apiKey: "driver-placeholder", fetch: driverFetch(loaded) })("gemini-3-pro-preview")
 
     const result = await model.doGenerate(generateOptions("high"))

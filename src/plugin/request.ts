@@ -1409,10 +1409,11 @@ export function prepareAntigravityRequest(
               keepThinkingEnabled,
               enableClaudePromptAutoCaching,
             });
-
-            // Step 3: Apply tool pairing fixes (ID assignment, response matching, orphan recovery)
-            applyToolPairingFixes(req as Record<string, unknown>, true);
           }
+
+          // Preserve identities for parallel same-name calls on every model;
+          // Claude also receives its stricter orphan recovery in this helper.
+          applyToolPairingFixes(req as Record<string, unknown>, isClaude);
         }
 
         if (isClaudeThinking && keepThinkingEnabled && sessionId) {
@@ -2112,6 +2113,10 @@ export function prepareAntigravityRequest(
           requestPayload.messages = validateAndFixClaudeToolPairing(
             requestPayload.messages,
           );
+        }
+
+        if (!isClaude) {
+          applyToolPairingFixes(requestPayload, false);
         }
 
         // =====================================================================

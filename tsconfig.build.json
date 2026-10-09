@@ -6,9 +6,8 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "allowImportingTsExtensions": true,
-    "rewriteRelativeImportExtensions": true
+    "allowImportingTsExtensions": false
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "index.ts", "server.ts", "v1.ts"],
+  "include": ["index.ts", "src/**/*.ts"],
   "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/*.spec.ts", "src/**/*.spec.tsx"]
 }

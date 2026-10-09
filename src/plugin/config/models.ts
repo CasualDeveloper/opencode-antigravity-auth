@@ -1,5 +1,3 @@
-import type { ProviderModel } from "../types";
-
 export type ModelThinkingLevel = "minimal" | "low" | "medium" | "high";
 
 export interface ModelThinkingConfig {
@@ -7,6 +5,7 @@ export interface ModelThinkingConfig {
 }
 
 export interface ModelVariant {
+  backendModelID?: string;
   thinkingLevel?: ModelThinkingLevel;
   thinkingConfig?: ModelThinkingConfig;
 }
@@ -23,7 +22,8 @@ export interface ModelModalities {
   output: ModelModality[];
 }
 
-export interface OpencodeModelDefinition extends ProviderModel {
+export interface OpencodeModelDefinition {
+  backendModelID?: string;
   name: string;
   temperature?: boolean;
   limit: ModelLimit;
@@ -45,6 +45,9 @@ export interface GeminiApiModel {
 export interface AntigravityAvailableModel {
   displayName?: string;
   modelName?: string;
+  isInternal?: boolean;
+  maxTokens?: number;
+  maxOutputTokens?: number;
 }
 
 export type AntigravityAvailableModels = Record<string, AntigravityAvailableModel>;
@@ -54,6 +57,7 @@ const DEFAULT_MODALITIES: ModelModalities = {
   output: ["text"],
 };
 
+// Metadata overrides for known models, never a source of model availability.
 export const OPENCODE_MODEL_DEFINITIONS: OpencodeModelDefinitions = {
   "antigravity-gemini-3-pro": {
     name: "Gemini 3 Pro (Antigravity)",
@@ -301,19 +305,45 @@ export function modelsFromGeminiApi(models: GeminiApiModel[]): OpencodeModelDefi
   return definitions;
 }
 
-export function modelsFromAntigravityAvailableModels(
+function antigravityBackendDefinitions(
   models: AntigravityAvailableModels,
 ): OpencodeModelDefinitions {
   const definitions: OpencodeModelDefinitions = {};
+  const selectedNames = new Map<string, { id: string; matchesName: boolean }>();
 
   for (const [sourceId, entry] of Object.entries(models)) {
     const modelId = antigravityModelIdFromEntry(sourceId, entry);
     if (!modelId) continue;
 
-    const variants = defaultVariantsForModel(modelId);
+    // Exclude editor-internal models, but keep advertised tier IDs: a static
+    // base-model definition is metadata, not evidence that a base ID is served.
+    const rawModelId = modelId.replace(/^antigravity-/, "");
+    if (entry.isInternal || /^(?:chat_|tab(?:_jump)?_)/i.test(rawModelId)) continue;
+
+    const displayName = entry.displayName?.trim();
+    if (displayName) {
+      const nameKey = displayName.toLowerCase().replace(/\s+/g, " ");
+      const matchesName = rawModelId.toLowerCase().replace(/[^a-z0-9]/g, "")
+        === nameKey.replace(/[^a-z0-9]/g, "");
+      const selected = selectedNames.get(nameKey);
+      // Backends advertise legacy aliases under the same name. Prefer a
+      // matching ID, then use ID order so API response order cannot flip it.
+      if (selected) {
+        if (selected.matchesName && !matchesName) continue;
+        if (selected.matchesName === matchesName && selected.id <= modelId) continue;
+        delete definitions[selected.id];
+      }
+      selectedNames.set(nameKey, { id: modelId, matchesName });
+    }
+
+    const fixedTier = /-(?:extra-low|minimal|low|medium|high|max|agent)$/i.test(rawModelId);
+    const variants = fixedTier ? undefined : defaultVariantsForModel(modelId);
     const discovered: OpencodeModelDefinition = {
-      name: entry.displayName ? `${entry.displayName} (Antigravity)` : `${titleFromModelId(modelId)} (Antigravity)`,
-      limit: defaultLimitForModel(modelId),
+      name: `${displayName || titleFromModelId(rawModelId)} (Antigravity)`,
+      limit: {
+        context: entry.maxTokens ?? defaultLimitForModel(modelId).context,
+        output: entry.maxOutputTokens ?? defaultLimitForModel(modelId).output,
+      },
       modalities: DEFAULT_MODALITIES,
       ...(variants ? { variants } : {}),
     };
@@ -323,6 +353,58 @@ export function modelsFromAntigravityAvailableModels(
   return definitions;
 }
 
-export function mergeModelDefinitions(...definitions: Record<string, ProviderModel>[]): Record<string, ProviderModel> {
-  return Object.assign({}, ...definitions);
+export function modelsFromAntigravityAvailableModels(
+  models: AntigravityAvailableModels,
+): OpencodeModelDefinitions {
+  const groups = new Map<string, Array<{
+    id: string;
+    name: string;
+    tier?: string;
+    definition: OpencodeModelDefinition;
+  }>>();
+  for (const [id, definition] of Object.entries(antigravityBackendDefinitions(models))) {
+    const label = definition.name.replace(/ \(Antigravity\)$/, "");
+    const tierMatch = label.match(/\s+\((minimal|extra-low|low|medium|high|max)\)$/i);
+    const tier = tierMatch?.[1]?.toLowerCase();
+    const name = tierMatch
+      ? label.slice(0, tierMatch.index)
+      : label.replace(/ Tiered$/i, "");
+    const key = name.toLowerCase();
+    const group = groups.get(key) ?? [];
+    group.push({ id, name, tier, definition });
+    groups.set(key, group);
+  }
+
+  const definitions: OpencodeModelDefinitions = {};
+  const tiers = ["minimal", "extra-low", "low", "medium", "high", "max"];
+  for (const group of groups.values()) {
+    // A bare/tiered endpoint supplies the default when advertised. Otherwise
+    // default to the lowest advertised tier, independent of response order.
+    group.sort((a, b) =>
+      (a.tier ? tiers.indexOf(a.tier) + 1 : 0) - (b.tier ? tiers.indexOf(b.tier) + 1 : 0)
+      || a.id.localeCompare(b.id),
+    );
+    const preferred = group[0];
+    if (!preferred) continue;
+    const tiered = group.filter((entry) => entry.tier !== undefined);
+    const matchingBaseID = group
+      .map((entry) => entry.id.replace(/-(?:extra-low|minimal|low|medium|high|max|tiered)$/i, ""))
+      .find((base) => base.replace(/^antigravity-/, "").replace(/[^a-z0-9]/gi, "").toLowerCase()
+        === preferred.name.replace(/[^a-z0-9]/gi, "").toLowerCase());
+    const id = tiered.length > 0
+      ? matchingBaseID ?? `antigravity-${preferred.name.toLowerCase().replace(/[^a-z0-9.-]+/g, "-")}`
+      : preferred.id.replace(/-tiered$/i, "");
+    const variants = tiered.length > 0
+      ? Object.fromEntries(tiered.map((entry) => [entry.tier!, {
+        backendModelID: entry.id.replace(/^antigravity-/, ""),
+      }]))
+      : preferred.definition.variants;
+    definitions[id] = {
+      ...preferred.definition,
+      name: `${preferred.name} (Antigravity)`,
+      backendModelID: preferred.id.replace(/^antigravity-/, ""),
+      variants,
+    };
+  }
+  return definitions;
 }

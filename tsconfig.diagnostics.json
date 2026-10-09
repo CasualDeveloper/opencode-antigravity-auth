@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["script/ab-signature-scope.ts", "script/signature-continuity-probe.ts"],
+  "exclude": ["node_modules", "dist"]
+}

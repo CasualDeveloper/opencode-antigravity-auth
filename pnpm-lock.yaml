@@ -9,17 +9,23 @@ importers:
   .:
     dependencies:
       '@ai-sdk/google':
-        specifier: 3.0.24
-        version: 3.0.24(zod@4.4.3)
+        specifier: 3.0.64
+        version: 3.0.64(zod@4.4.3)
       '@openauthjs/openauth':
         specifier: ^0.4.3
         version: 0.4.3(arctic@2.3.4)(hono@4.12.21)
-      '@opencode-ai/plugin':
-        specifier: ^0.15.31
-        version: 0.15.31
+      '@opencode/ai':
+        specifier: 2.0.22
+        version: 2.0.22(supports-color@7.2.0)
       '@opencode/plugin':
         specifier: 2.0.22
         version: 2.0.22(@opentelemetry/semantic-conventions@1.43.0)(redis@6.3.0(@opentelemetry/api@1.9.0))(supports-color@7.2.0)
+      '@opencode/schema':
+        specifier: 2.0.22
+        version: 2.0.22
+      '@types/json-schema':
+        specifier: 7.0.15
+        version: 7.0.15
       proper-lockfile:
         specifier: ^4.1.2
         version: 4.1.2
@@ -54,14 +60,14 @@ importers:
 
 packages:
 
-  '@ai-sdk/google@3.0.24':
-    resolution: {integrity: sha512-f4TVlkhfWVpcCeC4iZkt8Z4wDOG2qF3Rvxl1EiDAP4h0C5W+HSIacDFM0w0xxnEvapA+8UKXMn34qGFcok7Y7g==}
+  '@ai-sdk/google@3.0.64':
+    resolution: {integrity: sha512-CbR82EgGPNrj/6q0HtclwuCqe0/pDShyv3nWDP/A9DroujzWXnLMlUJVrgPOsg4b40zQCwwVs2XSKCxvt/4QaA==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/provider-utils@4.0.14':
-    resolution: {integrity: sha512-7bzKd9lgiDeXM7O4U4nQ8iTxguAOkg8LZGD9AfDVZYjO5cKYRwBPwVjboFcVrxncRHu0tYxZtXZtiLKpG4pEng==}
+  '@ai-sdk/provider-utils@4.0.23':
+    resolution: {integrity: sha512-z8GlDaCmRSDlqkMF2f4/RFgWxdarvIbyuk+m6WXT1LYgsnGiXRJGTD2Z1+SDl3LqtFuRtGX1aghYvQLoHL/9pg==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -519,12 +525,6 @@ packages:
       arctic: ^2.2.2
       hono: ^4.0.0
 
-  '@opencode-ai/plugin@0.15.31':
-    resolution: {integrity: sha512-htKKCq9Htljf7vX5ANLDB7bU7TeJYrl8LP2CQUtCAguKUpVvpj5tiZ+edlCdhGFEqlpSp+pkiTEY5LCv1muowg==}
-
-  '@opencode-ai/sdk@0.15.31':
-    resolution: {integrity: sha512-95HWBiNKQnwsubkR2E7QhBD/CH9yteZGrviWar0aKHWu8/RjWw9m7Znbv8DI+y6i2dMwBBcGQ8LJ7x0abzys4A==}
-
   '@opencode/ai@2.0.22':
     resolution: {integrity: sha512-wdD2ut4G/areDkA9bYizYiho6C1sRQ6mPqMSji93XzadavbkIcbhU/VyodOmExtZtOg2IjheJCUVCpDXQ8n8FA==}
 
@@ -938,6 +938,9 @@ packages:
 
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
+
+  '@types/json-schema@7.0.15':
+    resolution: {integrity: sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==}
 
   '@types/node@24.13.3':
     resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
@@ -1967,13 +1970,13 @@ packages:
 
 snapshots:
 
-  '@ai-sdk/google@3.0.24(zod@4.4.3)':
+  '@ai-sdk/google@3.0.64(zod@4.4.3)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
-      '@ai-sdk/provider-utils': 4.0.14(zod@4.4.3)
+      '@ai-sdk/provider-utils': 4.0.23(zod@4.4.3)
       zod: 4.4.3
 
-  '@ai-sdk/provider-utils@4.0.14(zod@4.4.3)':
+  '@ai-sdk/provider-utils@4.0.23(zod@4.4.3)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
       '@standard-schema/spec': 1.1.0
@@ -2513,13 +2516,6 @@ snapshots:
       hono: 4.12.21
       jose: 5.9.6
 
-  '@opencode-ai/plugin@0.15.31':
-    dependencies:
-      '@opencode-ai/sdk': 0.15.31
-      zod: 4.1.8
-
-  '@opencode-ai/sdk@0.15.31': {}
-
   '@opencode/ai@2.0.22(supports-color@7.2.0)':
     dependencies:
       '@aws-sdk/credential-providers': 3.1057.0
@@ -2915,6 +2911,8 @@ snapshots:
   '@types/deep-eql@4.0.2': {}
 
   '@types/estree@1.0.9': {}
+
+  '@types/json-schema@7.0.15': {}
 
   '@types/node@24.13.3':
     dependencies:

@@ -82,11 +82,15 @@ No linter or formatter is configured. Style is enforced by convention (see below
 
 ```
 src/
-├── plugin.ts                # Main entry, fetch interceptor
+├── plugin.ts                # Native setup and event lifecycle (no V1 adapter)
+├── google-provider.ts       # SDK hooks, backend variants, credential switching
 ├── constants.ts             # Endpoints, headers, API config, system prompts
 ├── antigravity/oauth.ts     # OAuth token exchange
 └── plugin/
-    ├── auth.ts              # Token validation & refresh
+    ├── auth.ts              # Native OAuth integration and credential resolution
+    ├── model-catalog.ts     # Discovered inventory and grouped picker variants
+    ├── transport.ts         # Request pipeline, retries, quota and account rotation
+    ├── search.ts            # Native grounded-search tool and executor
     ├── request.ts           # Request transformation (core logic)
     ├── request-helpers.ts   # Schema cleaning, thinking filters
     ├── thinking-recovery.ts # Turn boundary detection
@@ -123,7 +127,7 @@ Per-account device fingerprints stored in `antigravity-accounts.json`. Each fing
 ## Dependencies
 
 - `zod ^4` — schema validation (NOT zod v3)
-- `@opencode-ai/plugin` — OpenCode plugin interface
+- `@opencode/plugin` — OpenCode native plugin interface
 - `@openauthjs/openauth` — OAuth client
 - `proper-lockfile` — file locking for concurrent access
 - `xdg-basedir` — XDG directory resolution

@@ -540,6 +540,25 @@ describe("request.ts", () => {
     const mockAccessToken = "test-token";
     const mockProjectId = "test-project";
 
+    it.each([
+      "gemini-3.1-pro-high",
+      "gemini-3.5-flash-extra-low",
+      "gemini-3.5-flash-low",
+      "gemini-3-flash-agent",
+      "gemini-3.6-flash-medium",
+      "gemini-3.7-flash-tiered",
+      "claude-opus-5-5-high",
+    ])("routes discovered backend ID %s without inventing a bare model", (model) => {
+      const result = prepareAntigravityRequest(
+        `https://generativelanguage.googleapis.com/v1beta/models/antigravity-${model}:generateContent`,
+        { method: "POST", body: JSON.stringify({ contents: [] }) },
+        mockAccessToken,
+        mockProjectId,
+      );
+      expect(result.effectiveModel).toBe(model);
+      expect(JSON.parse(String(result.init?.body)).model).toBe(model);
+    });
+
     it("returns unchanged request for non-generative-language URLs", () => {
       const result = prepareAntigravityRequest(
         "https://example.com/api",
@@ -634,6 +653,46 @@ describe("request.ts", () => {
         mockProjectId
       );
       expect(result.streaming).toBe(false);
+    });
+
+    it("pairs parallel same-name Gemini tool calls with their results", () => {
+      const result = prepareAntigravityRequest(
+        "https://generativelanguage.googleapis.com/v1beta/models/antigravity-gemini-3.1-pro:generateContent",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            contents: [
+              {
+                role: "model",
+                parts: [
+                  { functionCall: { name: "read", args: { path: "alpha.txt" } } },
+                  { functionCall: { name: "read", args: { path: "beta.txt" } } },
+                ],
+              },
+              {
+                role: "user",
+                parts: [
+                  { functionResponse: { name: "read", response: { content: "alpha" } } },
+                  { functionResponse: { name: "read", response: { content: "beta" } } },
+                ],
+              },
+            ],
+          }),
+        },
+        mockAccessToken,
+        mockProjectId,
+      );
+
+      const body = JSON.parse(result.init.body as string);
+      const calls = body.request.contents[0].parts.map(
+        (part: { functionCall: { id?: string } }) => part.functionCall.id,
+      );
+      const responses = body.request.contents[1].parts.map(
+        (part: { functionResponse: { id?: string } }) => part.functionResponse.id,
+      );
+
+      expect(calls).toEqual(["tool-call-1", "tool-call-2"]);
+      expect(responses).toEqual(calls);
     });
 
     it("sets Authorization header with Bearer token", () => {

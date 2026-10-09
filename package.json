@@ -1,33 +1,29 @@
 {
-    "name": "opencode-antigravity-auth",
-    "version": "1.6.0",
+    "name": "@chrisgeo/opencode-antigravity-auth",
+    "version": "1.7.0",
     "description": "Google Antigravity IDE OAuth auth plugin for Opencode - access Gemini 3 Pro and Claude 4.6 using Google credentials",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
-    "type": "module",
     "exports": {
         ".": {
             "types": "./dist/index.d.ts",
-            "import": "./dist/index.js"
-        },
-        "./v1": {
-            "types": "./dist/v1.d.ts",
-            "import": "./dist/v1.js"
-        },
-        "./server": {
-            "types": "./dist/server.d.ts",
-            "import": "./dist/server.js"
+            "import": "./dist/index.js",
+            "default": "./dist/index.js"
         }
     },
+    "type": "module",
     "license": "MIT",
+    "publishConfig": {
+        "access": "public"
+    },
     "author": "noefabris",
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/NoeFabris/opencode-antigravity-auth.git"
+        "url": "git+https://github.com/chrisgeo/opencode-antigravity-auth.git"
     },
-    "homepage": "https://github.com/NoeFabris/opencode-antigravity-auth#readme",
+    "homepage": "https://github.com/chrisgeo/opencode-antigravity-auth#readme",
     "bugs": {
-        "url": "https://github.com/NoeFabris/opencode-antigravity-auth/issues"
+        "url": "https://github.com/chrisgeo/opencode-antigravity-auth/issues"
     },
     "keywords": [
         "opencode",
@@ -40,7 +36,7 @@
         "claude"
     ],
     "engines": {
-        "node": ">=20.0.0"
+        "node": ">=22.22.2"
     },
     "files": [
         "dist/",
@@ -48,14 +44,16 @@
         "LICENSE"
     ],
     "scripts": {
-        "build": "tsc -p tsconfig.build.json",
+        "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && node scripts/fix-esm-imports.mjs",
         "build:schema": "npx tsx script/build-schema.ts",
-        "typecheck": "tsc --noEmit",
+        "check:native": "node scripts/check-native.mjs",
+        "typecheck": "tsc --noEmit && tsc -p tsconfig.diagnostics.json",
         "test": "vitest run",
         "test:watch": "vitest",
         "test:ui": "vitest --ui",
         "test:coverage": "vitest run --coverage",
         "prepublishOnly": "npm run build",
+        "verify:pack": "node scripts/verify-pack.mjs",
         "test:e2e:models": "npx tsx script/test-models.ts",
         "test:e2e:regression": "npx tsx script/test-regression.ts"
     },
@@ -72,10 +70,12 @@
         "zod-to-json-schema": "^3.25.2"
     },
     "dependencies": {
-        "@ai-sdk/google": "3.0.24",
+        "@ai-sdk/google": "3.0.64",
         "@openauthjs/openauth": "^0.4.3",
-        "@opencode-ai/plugin": "^0.15.31",
+        "@opencode/ai": "2.0.22",
         "@opencode/plugin": "2.0.22",
+        "@opencode/schema": "2.0.22",
+        "@types/json-schema": "7.0.15",
         "proper-lockfile": "^4.1.2",
         "xdg-basedir": "^5.1.0",
         "zod": "^4.4.3"

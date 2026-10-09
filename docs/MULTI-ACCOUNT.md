@@ -1,199 +1,27 @@
-# Multi-Account Setup
+# Multi-account usage
 
-Add multiple Google accounts to increase your combined quota and improve availability. The plugin automatically rotates between accounts when one is rate-limited.
+Use OpenCode V2's **Connect an integration** dialog and select Google → **Google Antigravity**. Repeat sign-in to add another Google account. Successful OAuth exchanges are merged into `antigravity-accounts.json`, preserving existing account quota, cooldown, and fingerprint state.
 
-```bash
-opencode auth login  # Run again to add more accounts
-```
+The selected host credential is the preferred account when a request pipeline is created. Account selection still respects disabled accounts, per-model quota, and cooldowns. When a cached SDK survives a host credential switch, subsequent requests select the new credential's pipeline.
 
----
+## Storage
 
-## Load Balancing Behavior
+Account refresh tokens, project IDs, fingerprints, and quota state remain in the existing global account file. Do not share this file or paste it into an issue. Keep a private backup before intentionally changing account storage.
 
-- **Sticky account selection** — Sticks to the same account until rate-limited (preserves Anthropic's prompt cache)
-- **Per-model-family limits** — Rate limits tracked separately for Claude and Gemini models
-- **Antigravity-first for Gemini** — Gemini requests use Antigravity quota first, then automatically fall back to Gemini CLI when exhausted across all accounts. Public-only models such as Gemini 3.5 Flash-Lite use the Gemini CLI path directly.
-- **Smart retry threshold** — Short rate limits (≤5s) are retried on same account
-- **Exponential backoff** — Increasing delays for consecutive rate limits
+The account pool reconciles disk changes without replacing pending in-memory writes. Token rotation preserves account identity and quota state; revoked accounts are removed from the usable pool by the transport's refresh/rotation handling.
 
----
+## Quota handling
 
-## Dual Quota Pools
+- Rate-limited accounts rotate according to `account_selection_strategy`.
+- Per-model cooldowns avoid repeatedly selecting a blocked account.
+- Gemini can use the existing Antigravity/Gemini CLI quota routing and optional configured API-key fallback where permitted.
+- Explicit `antigravity-*` routing retains its existing quota semantics.
+- Claude and other Antigravity-only models cannot be served by a public Gemini API key.
 
-For Gemini models, the plugin accesses **two independent quota pools** per account:
+See [configuration](CONFIGURATION.md) for account selection, soft-quota thresholds, proactive refresh, and API-key settings.
 
-| Quota Pool | When Used |
-|------------|-----------|
-| **Antigravity** | Default for all requests |
-| **Gemini CLI** | Automatic fallback between Antigravity and Gemini CLI in both directions |
+## Model discovery
 
-This effectively **doubles your Gemini quota** through automatic fallback between Antigravity and Gemini CLI pools.
+The catalog refreshes at startup and after credential updates or a Google credential switch. Successful discovery replaces the inventory and removes retired models. It groups advertised thinking tiers into variants and deduplicates aliases; model availability is not supplied by static definitions.
 
-### How Quota Fallback Works
-
-1. Request uses Antigravity quota on current account
-2. If rate-limited, plugin checks if ANY other account has Antigravity available
-3. If yes → switch to that account (stay on Antigravity)
-4. If no (all accounts exhausted) → fall back to Gemini CLI quota on current account
-5. Model names are automatically transformed (e.g., `gemini-3-flash` → `gemini-3-flash-preview`)
-
-Automatic fallback between pools is always enabled for Gemini requests.
-
----
-
-## Checking Quotas
-
-Check your current API usage across all accounts:
-
-```bash
-opencode auth login
-# Select "Check quotas" from the menu
-```
-
-This shows remaining quota percentages and reset times for each model family:
-- **Claude** - Claude Opus/Sonnet quota
-- **Gemini 3 Pro** - Gemini 3 Pro quota
-- **Gemini 3 Flash** - Gemini 3 Flash quota
-
-### Standalone Quota Script
-
-For checking quotas outside of OpenCode (for debugging, CI, etc.):
-
-```bash
-node scripts/check-quota.mjs                    # Check all accounts
-node scripts/check-quota.mjs --account 2        # Check specific account
-node scripts/check-quota.mjs --path /path/to/accounts.json  # Custom path
-```
-
----
-
-## Managing Accounts
-
-Enable or disable specific accounts to control which ones are used for requests:
-
-```bash
-opencode auth login
-# Select "Manage accounts (enable/disable)"
-```
-
-Or select an account from the list and choose "Enable/Disable account".
-
-**Disabled accounts:**
-- Are excluded from automatic rotation
-- Still appear in quota checks (marked `[disabled]`)
-- Can be re-enabled at any time
-
-Useful when:
-- An account is temporarily banned or rate-limited for an extended period
-- You want to reserve certain accounts for specific use cases
-- Testing with a subset of accounts
-
----
-
-## Adding Accounts
-
-When running `opencode auth login` with existing accounts:
-
-```
-2 account(s) saved:
-  1. user1@gmail.com
-  2. user2@gmail.com
-
-(a)dd new account(s) or (f)resh start? [a/f]:
-```
-
-Choose `a` to add more accounts while keeping existing ones.
-
----
-
-## Account Storage
-
-Accounts are stored in `~/.config/opencode/antigravity-accounts.json`:
-
-```json
-{
-  "version": 3,
-  "accounts": [
-    {
-      "email": "user1@gmail.com",
-      "refreshToken": "1//0abc...",
-      "projectId": "my-gcp-project",
-      "enabled": true
-    },
-    {
-      "email": "user2@gmail.com",
-      "refreshToken": "1//0xyz...",
-      "enabled": false
-    }
-  ],
-  "activeIndex": 0,
-  "activeIndexByFamily": {
-    "claude": 0,
-    "gemini": 0
-  }
-}
-```
-
-> ⚠️ **Security:** This file contains OAuth refresh tokens. Treat it like a password file.
-
-### Fields
-
-| Field | Description |
-|-------|-------------|
-| `email` | Google account email |
-| `refreshToken` | OAuth refresh token (auto-managed) |
-| `projectId` | Optional. Required for Gemini CLI models. See [Troubleshooting](TROUBLESHOOTING.md#gemini-cli-permission-error). |
-| `enabled` | Optional. Set to `false` to disable account rotation. Defaults to `true`. |
-| `activeIndex` | Currently active account index |
-| `activeIndexByFamily` | Per-model-family active account (claude/gemini tracked separately) |
-
----
-
-## Token Revocation
-
-If Google revokes a token (e.g., password change, security event), you'll see `invalid_grant` errors. The plugin automatically removes invalid accounts.
-
-To manually reset:
-
-```bash
-rm ~/.config/opencode/antigravity-accounts.json
-opencode auth login
-```
-
----
-
-## Parallel Sessions (oh-my-opencode)
-
-When using oh-my-opencode with parallel subagents, multiple processes may select the same account, causing rate limit errors.
-
-**Solution:** Enable PID-based offset in `antigravity.json`:
-
-```json
-{
-  "pid_offset_enabled": true
-}
-```
-
-This distributes sessions across accounts based on process ID.
-
-Alternatively, add more accounts via `opencode auth login`.
-
----
-
-## Account Selection Strategies
-
-Configure in `antigravity.json`:
-
-```json
-{
-  "account_selection_strategy": "hybrid"
-}
-```
-
-| Strategy | Behavior | Best For |
-|----------|----------|----------|
-| `sticky` | Same account until rate-limited | Prompt cache preservation |
-| `round-robin` | Rotate to next account on every request | Maximum throughput |
-| `hybrid` | Deterministic selection based on health score + token bucket + LRU | Best overall distribution |
-
-See [Configuration](CONFIGURATION.md#account-selection) for more details.
+The V1 terminal login/account-management menu is not included in this V2-only package. Use the host integration dialog for sign-in instead.

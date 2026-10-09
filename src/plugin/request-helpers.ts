@@ -1892,11 +1892,11 @@ export function createStreamingChunkCounter(): StreamingChunkCounter {
  * @returns true if the line contains content worth counting
  */
 export function isMeaningfulSseLine(line: string): boolean {
-  if (!line.startsWith("data: ")) {
+  if (!line.startsWith("data:")) {
     return false;
   }
 
-  const data = line.slice(6).trim();
+  const data = line.slice(5).trim();
   
   if (data === "[DONE]") {
     return false;
@@ -1917,6 +1917,7 @@ export function isMeaningfulSseLine(line: string): boolean {
           for (const part of parts) {
             if (typeof part?.text === "string" && part.text.length > 0) return true;
             if (part?.functionCall) return true;
+            if (part?.inlineData || part?.fileData) return true;
           }
         }
       }
@@ -2755,12 +2756,13 @@ export function matchResponseIdsToContents(
 }
 
 /**
- * Applies all tool fixes to a request payload for Claude models.
+ * Applies tool-call identity fixes to Gemini-format requests and the additional
+ * orphan recovery required by Claude models.
  * This includes:
  * 1. Tool ID assignment for functionCalls
  * 2. Response ID matching for functionResponses
- * 3. Orphan recovery via fixToolResponseGrouping
- * 4. Claude format pairing fix via validateAndFixClaudeToolPairing
+ * 3. Claude-only orphan recovery via fixToolResponseGrouping
+ * 4. Claude-only messages[] pairing via validateAndFixClaudeToolPairing
  * 
  * @param payload - Request payload object
  * @param isClaude - Whether this is a Claude model request
@@ -2773,11 +2775,9 @@ export function applyToolPairingFixes(
   let contentsFixed = false;
   let messagesFixed = false;
 
-  if (!isClaude) {
-    return { contentsFixed, messagesFixed };
-  }
-
-  // Fix Gemini format (contents[])
+  // Gemini 3 supports parallel calls to the same function. The AI SDK lowers
+  // those calls and results without IDs, so add stable FIFO-paired IDs before
+  // forwarding them to Antigravity.
   if (Array.isArray(payload.contents)) {
     // First pass: assign IDs to functionCalls
     const { contents: contentsWithIds, pendingCallIdsByName } = assignToolIdsToContents(
@@ -2787,8 +2787,10 @@ export function applyToolPairingFixes(
     // Second pass: match functionResponse IDs
     const contentsWithMatchedIds = matchResponseIdsToContents(contentsWithIds, pendingCallIdsByName);
 
-    // Third pass: fix orphan recovery
-    payload.contents = fixToolResponseGrouping(contentsWithMatchedIds);
+    // Claude additionally needs placeholders for genuinely orphaned calls.
+    payload.contents = isClaude
+      ? fixToolResponseGrouping(contentsWithMatchedIds)
+      : contentsWithMatchedIds;
     contentsFixed = true;
 
     log.debug("Applied tool pairing fixes to contents[]", {
@@ -2797,7 +2799,7 @@ export function applyToolPairingFixes(
   }
 
   // Fix Claude format (messages[])
-  if (Array.isArray(payload.messages)) {
+  if (isClaude && Array.isArray(payload.messages)) {
     payload.messages = validateAndFixClaudeToolPairing(payload.messages as any[]);
     messagesFixed = true;
 

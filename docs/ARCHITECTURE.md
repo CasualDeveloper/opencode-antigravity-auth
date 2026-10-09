@@ -1,6 +1,6 @@
 # Architecture Guide
 
-**Last Updated:** April 2026
+**Last Updated:** October 2026
 
 This document explains how the Antigravity plugin works: request/response flow, Claude-specific handling, and session recovery.
 
@@ -27,13 +27,17 @@ The plugin intercepts requests to `generativelanguage.googleapis.com`, transform
 
 ```
 src/
-├── index.ts                 # Plugin exports
-├── plugin.ts                # Main entry, fetch interceptor
+├── plugin.ts                # Native Plugin.define setup and event lifecycle
+├── google-provider.ts       # Google SDK hooks, variants, active credential routing
 ├── constants.ts             # Endpoints, headers, config
 ├── antigravity/
 │   └── oauth.ts             # OAuth token exchange
 └── plugin/
-    ├── auth.ts              # Token validation & refresh
+    ├── auth.ts              # Native Google integration, OAuth, credential resolution
+    ├── model-catalog.ts     # Discovery, cached inventory, grouped model variants
+    ├── transport.ts         # Account selection, quota rotation, retries and fetch
+    ├── search.ts            # Native google_search tool and grounded search executor
+    ├── token.ts             # Account-pool-owned access-token refresh
     ├── request.ts           # Request transformation (main logic)
     ├── request-helpers.ts   # Schema cleaning, thinking filters
     ├── thinking-recovery.ts # Turn boundary detection, crash recovery
@@ -54,7 +58,7 @@ src/
 
 ## Request Flow
 
-### 1. Interception (`plugin.ts`)
+### 1. Interception (`google-provider.ts`, `plugin/transport.ts`)
 
 ```typescript
 fetch() intercepted → isGenerativeLanguageRequest() → prepareAntigravityRequest()
@@ -63,6 +67,14 @@ fetch() intercepted → isGenerativeLanguageRequest() → prepareAntigravityRequ
 - Account selection (round-robin, rate-limit aware)
 - Token refresh if expired
 - Endpoint fallback (daily → autopush → prod)
+
+The package has one V2-native entrypoint. `src/plugin.ts` registers the owning modules directly; there is no `src/v2` directory, V1 client shim, or separate version adapter. Configuration is loaded from `context.location.directory`, not the server's working directory.
+
+### Model availability and variants
+
+`plugin/model-catalog.ts` replaces the catalog from successful discovery, including an empty inventory. Failed refreshes retain the last discovered inventory; bundled metadata never supplies availability. Internal editor models are excluded and equivalent aliases are deduplicated.
+
+The picker shows one entry per model family. Advertised Low/Medium/High backend IDs become variants whose settings carry their exact route. `google-provider.ts` reads the selected route after OpenCode applies the variant, preserving explicit Antigravity quota routing and Gemini multimodal support. SDK fetches resolve the current credential so cached SDKs cannot keep using a prior account.
 
 ### 2. Request Transformation (`request.ts`)
 
